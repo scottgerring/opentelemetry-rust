@@ -2,8 +2,8 @@
 name = "opentelemetry"
 version = "0.28.0"
 description = "OpenTelemetry API for Rust"
-homepage = "https://github.com/open-telemetry/opentelemetry-rust"
-repository = "https://github.com/open-telemetry/opentelemetry-rust"
+homepage = "https://github.com/open-telemetry/opentelemetry-rust/tree/main/opentelemetry"
+repository = "https://github.com/open-telemetry/opentelemetry-rust/tree/main/opentelemetry"
 readme = "README.md"
 categories = [
     "development-tools::debugging",
@@ -42,7 +42,7 @@ internal-logs = ["tracing"]
 [dev-dependencies]
 opentelemetry_sdk = { path = "../opentelemetry-sdk", features = ["spec_unstable_logs_enabled"]} # for documentation tests
 criterion = { workspace = true }
-rand = { workspace = true }
+rand = { workspace = true, features = ["os_rng", "thread_rng"] }
 
 [[bench]]
 name = "metrics"
@@ -56,3 +56,6 @@ harness = false
 [[bench]]
 name = "anyvalue"
 harness = false
+
+[lints]
+workspace = true

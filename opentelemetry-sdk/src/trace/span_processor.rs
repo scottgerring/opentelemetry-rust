@@ -53,7 +53,7 @@ use std::time::Instant;
 /// Delay interval between two consecutive exports.
 pub(crate) const OTEL_BSP_SCHEDULE_DELAY: &str = "OTEL_BSP_SCHEDULE_DELAY";
 /// Default delay interval between two consecutive exports.
-pub(crate) const OTEL_BSP_SCHEDULE_DELAY_DEFAULT: u64 = 5_000;
+pub(crate) const OTEL_BSP_SCHEDULE_DELAY_DEFAULT: Duration = Duration::from_millis(5_000);
 /// Maximum queue size
 pub(crate) const OTEL_BSP_MAX_QUEUE_SIZE: &str = "OTEL_BSP_MAX_QUEUE_SIZE";
 /// Default maximum queue size
@@ -65,7 +65,7 @@ pub(crate) const OTEL_BSP_MAX_EXPORT_BATCH_SIZE_DEFAULT: usize = 512;
 /// Maximum allowed time to export data.
 pub(crate) const OTEL_BSP_EXPORT_TIMEOUT: &str = "OTEL_BSP_EXPORT_TIMEOUT";
 /// Default maximum allowed time to export data.
-pub(crate) const OTEL_BSP_EXPORT_TIMEOUT_DEFAULT: u64 = 30_000;
+pub(crate) const OTEL_BSP_EXPORT_TIMEOUT_DEFAULT: Duration = Duration::from_millis(30_000);
 /// Environment variable to configure max concurrent exports for batch span
 /// processor.
 pub(crate) const OTEL_BSP_MAX_CONCURRENT_EXPORTS: &str = "OTEL_BSP_MAX_CONCURRENT_EXPORTS";
@@ -112,20 +112,20 @@ pub trait SpanProcessor: Send + Sync + std::fmt::Debug {
 /// - `reqwest-client`: TracerProvider may be created anywhere, but spans must be
 ///   emitted from a tokio runtime thread.
 #[derive(Debug)]
-pub struct SimpleSpanProcessor {
-    exporter: Mutex<Box<dyn SpanExporter>>,
+pub struct SimpleSpanProcessor<T: SpanExporter> {
+    exporter: Mutex<T>,
 }
 
-impl SimpleSpanProcessor {
+impl<T: SpanExporter> SimpleSpanProcessor<T> {
     /// Create a new [SimpleSpanProcessor] using the provided exporter.
-    pub fn new(exporter: Box<dyn SpanExporter>) -> Self {
+    pub fn new(exporter: T) -> Self {
         Self {
             exporter: Mutex::new(exporter),
         }
     }
 }
 
-impl SpanProcessor for SimpleSpanProcessor {
+impl<T: SpanExporter> SpanProcessor for SimpleSpanProcessor<T> {
     fn on_start(&self, _span: &mut Span, _cx: &Context) {
         // Ignored
     }
@@ -139,7 +139,7 @@ impl SpanProcessor for SimpleSpanProcessor {
             .exporter
             .lock()
             .map_err(|_| OTelSdkError::InternalFailure("SimpleSpanProcessor mutex poison".into()))
-            .and_then(|mut exporter| futures_executor::block_on(exporter.export(vec![span])));
+            .and_then(|exporter| futures_executor::block_on(exporter.export(vec![span])));
 
         if let Err(err) = result {
             // TODO: check error type, and log `error` only if the error is user-actionable, else log `debug`
@@ -708,9 +708,9 @@ impl Default for BatchConfigBuilder {
     fn default() -> Self {
         BatchConfigBuilder {
             max_queue_size: OTEL_BSP_MAX_QUEUE_SIZE_DEFAULT,
-            scheduled_delay: Duration::from_millis(OTEL_BSP_SCHEDULE_DELAY_DEFAULT),
+            scheduled_delay: OTEL_BSP_SCHEDULE_DELAY_DEFAULT,
             max_export_batch_size: OTEL_BSP_MAX_EXPORT_BATCH_SIZE_DEFAULT,
-            max_export_timeout: Duration::from_millis(OTEL_BSP_EXPORT_TIMEOUT_DEFAULT),
+            max_export_timeout: OTEL_BSP_EXPORT_TIMEOUT_DEFAULT,
             max_concurrent_exports: OTEL_BSP_MAX_CONCURRENT_EXPORTS_DEFAULT,
         }
         .init_from_env_vars()
@@ -852,7 +852,7 @@ mod tests {
     #[test]
     fn simple_span_processor_on_end_calls_export() {
         let exporter = InMemorySpanExporterBuilder::new().build();
-        let processor = SimpleSpanProcessor::new(Box::new(exporter.clone()));
+        let processor = SimpleSpanProcessor::new(exporter.clone());
         let span_data = new_test_export_span_data();
         processor.on_end(span_data.clone());
         assert_eq!(exporter.get_finished_spans().unwrap()[0], span_data);
@@ -862,7 +862,7 @@ mod tests {
     #[test]
     fn simple_span_processor_on_end_skips_export_if_not_sampled() {
         let exporter = InMemorySpanExporterBuilder::new().build();
-        let processor = SimpleSpanProcessor::new(Box::new(exporter.clone()));
+        let processor = SimpleSpanProcessor::new(exporter.clone());
         let unsampled = SpanData {
             span_context: SpanContext::empty_context(),
             parent_span_id: SpanId::INVALID,
@@ -884,7 +884,7 @@ mod tests {
     #[test]
     fn simple_span_processor_shutdown_calls_shutdown() {
         let exporter = InMemorySpanExporterBuilder::new().build();
-        let processor = SimpleSpanProcessor::new(Box::new(exporter.clone()));
+        let processor = SimpleSpanProcessor::new(exporter.clone());
         let span_data = new_test_export_span_data();
         processor.on_end(span_data.clone());
         assert!(!exporter.get_finished_spans().unwrap().is_empty());
@@ -898,14 +898,14 @@ mod tests {
         assert_eq!(OTEL_BSP_MAX_QUEUE_SIZE, "OTEL_BSP_MAX_QUEUE_SIZE");
         assert_eq!(OTEL_BSP_MAX_QUEUE_SIZE_DEFAULT, 2048);
         assert_eq!(OTEL_BSP_SCHEDULE_DELAY, "OTEL_BSP_SCHEDULE_DELAY");
-        assert_eq!(OTEL_BSP_SCHEDULE_DELAY_DEFAULT, 5000);
+        assert_eq!(OTEL_BSP_SCHEDULE_DELAY_DEFAULT.as_millis(), 5000);
         assert_eq!(
             OTEL_BSP_MAX_EXPORT_BATCH_SIZE,
             "OTEL_BSP_MAX_EXPORT_BATCH_SIZE"
         );
         assert_eq!(OTEL_BSP_MAX_EXPORT_BATCH_SIZE_DEFAULT, 512);
         assert_eq!(OTEL_BSP_EXPORT_TIMEOUT, "OTEL_BSP_EXPORT_TIMEOUT");
-        assert_eq!(OTEL_BSP_EXPORT_TIMEOUT_DEFAULT, 30000);
+        assert_eq!(OTEL_BSP_EXPORT_TIMEOUT_DEFAULT.as_millis(), 30000);
     }
 
     #[test]
@@ -924,14 +924,8 @@ mod tests {
             config.max_concurrent_exports,
             OTEL_BSP_MAX_CONCURRENT_EXPORTS_DEFAULT
         );
-        assert_eq!(
-            config.scheduled_delay,
-            Duration::from_millis(OTEL_BSP_SCHEDULE_DELAY_DEFAULT)
-        );
-        assert_eq!(
-            config.max_export_timeout,
-            Duration::from_millis(OTEL_BSP_EXPORT_TIMEOUT_DEFAULT)
-        );
+        assert_eq!(config.scheduled_delay, OTEL_BSP_SCHEDULE_DELAY_DEFAULT);
+        assert_eq!(config.max_export_timeout, OTEL_BSP_EXPORT_TIMEOUT_DEFAULT);
         assert_eq!(config.max_queue_size, OTEL_BSP_MAX_QUEUE_SIZE_DEFAULT);
         assert_eq!(
             config.max_export_batch_size,
@@ -967,14 +961,8 @@ mod tests {
 
         assert_eq!(config.max_queue_size, 256);
         assert_eq!(config.max_export_batch_size, 256);
-        assert_eq!(
-            config.scheduled_delay,
-            Duration::from_millis(OTEL_BSP_SCHEDULE_DELAY_DEFAULT)
-        );
-        assert_eq!(
-            config.max_export_timeout,
-            Duration::from_millis(OTEL_BSP_EXPORT_TIMEOUT_DEFAULT)
-        );
+        assert_eq!(config.scheduled_delay, OTEL_BSP_SCHEDULE_DELAY_DEFAULT);
+        assert_eq!(config.max_export_timeout, OTEL_BSP_EXPORT_TIMEOUT_DEFAULT);
     }
 
     #[test]
@@ -1014,8 +1002,6 @@ mod tests {
     }
 
     use crate::Resource;
-    use futures_util::future::BoxFuture;
-    use futures_util::FutureExt;
     use opentelemetry::{Key, KeyValue, Value};
     use std::sync::{atomic::Ordering, Arc, Mutex};
 
@@ -1036,13 +1022,10 @@ mod tests {
     }
 
     impl SpanExporter for MockSpanExporter {
-        fn export(&mut self, batch: Vec<SpanData>) -> BoxFuture<'static, OTelSdkResult> {
+        async fn export(&self, batch: Vec<SpanData>) -> OTelSdkResult {
             let exported_spans = self.exported_spans.clone();
-            async move {
-                exported_spans.lock().unwrap().extend(batch);
-                Ok(())
-            }
-            .boxed()
+            exported_spans.lock().unwrap().extend(batch);
+            Ok(())
         }
 
         fn shutdown(&mut self) -> OTelSdkResult {

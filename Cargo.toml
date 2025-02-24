@@ -36,7 +36,7 @@ pin-project-lite = "0.2"
 prost = "0.13"
 prost-build = "0.13"
 prost-types = "0.13"
-rand = { version = "0.8", default-features = false }
+rand = { version = "0.9", default-features = false }
 reqwest = { version = "0.12", default-features = false }
 serde = { version = "1.0", default-features = false }
 serde_json = "1.0"
@@ -59,3 +59,6 @@ url = { version = "2.5", default-features = false }
 opentelemetry = { path = "opentelemetry" }
 opentelemetry_sdk = { path = "opentelemetry-sdk" }
 opentelemetry-stdout = { path = "opentelemetry-stdout" }
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = 1 }
