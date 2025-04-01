@@ -1,5 +1,8 @@
 use crate::layer::WithContext;
-use opentelemetry::{trace::SpanContext, trace::Status, Context, Key, KeyValue, Value};
+use opentelemetry::{
+    trace::{SpanContext, Status, TraceContextExt},
+    Context, Key, KeyValue, Value,
+};
 
 /// Utility functions to allow tracing [`Span`]s to accept and return
 /// [OpenTelemetry] [`Context`]s.
@@ -155,14 +158,17 @@ pub trait OpenTelemetrySpanExt {
 }
 
 impl OpenTelemetrySpanExt for tracing::Span {
+    // TODO:ban should this really operate on a SpanContext instead of a Context?
     fn set_parent(&self, cx: Context) {
         let mut cx = Some(cx);
         self.with_subscriber(move |(id, subscriber)| {
             if let Some(get_context) = subscriber.downcast_ref::<WithContext>() {
-                get_context.with_context(subscriber, id, move |data, _tracer| {
+                get_context.with_context(subscriber, id, move |data| {
                     if let Some(cx) = cx.take() {
                         data.parent_cx = cx;
-                        data.builder.sampling_result = None;
+                        data.builder
+                            .as_mut()
+                            .map(|builder| builder.sampling_result = None);
                     }
                 });
             }
@@ -177,16 +183,19 @@ impl OpenTelemetrySpanExt for tracing::Span {
         if cx.is_valid() {
             let mut cx = Some(cx);
             let mut att = Some(attributes);
+            // TODO:ban add add version for SpanRef
             self.with_subscriber(move |(id, subscriber)| {
                 if let Some(get_context) = subscriber.downcast_ref::<WithContext>() {
-                    get_context.with_context(subscriber, id, move |data, _tracer| {
+                    get_context.with_context(subscriber, id, move |data| {
                         if let Some(cx) = cx.take() {
                             let attr = att.take().unwrap_or_default();
                             let follows_link = opentelemetry::trace::Link::new(cx, attr, 0);
-                            data.builder
-                                .links
-                                .get_or_insert_with(|| Vec::with_capacity(1))
-                                .push(follows_link);
+                            if let Some(builder) = data.builder.as_mut() {
+                                builder
+                                    .links
+                                    .get_or_insert_with(|| Vec::with_capacity(1))
+                                    .push(follows_link);
+                            }
                         }
                     });
                 }
@@ -198,8 +207,9 @@ impl OpenTelemetrySpanExt for tracing::Span {
         let mut cx = None;
         self.with_subscriber(|(id, subscriber)| {
             if let Some(get_context) = subscriber.downcast_ref::<WithContext>() {
-                get_context.with_context(subscriber, id, |builder, tracer| {
-                    cx = Some(tracer.sampled_context(builder));
+                get_context.with_context(subscriber, id, |data| {
+                    // TODO:ban create the span if it doesn't exist
+                    cx = Some(data.parent_cx.clone());
                 })
             }
         });
@@ -212,17 +222,22 @@ impl OpenTelemetrySpanExt for tracing::Span {
             if let Some(get_context) = subscriber.downcast_ref::<WithContext>() {
                 let mut key = Some(key.into());
                 let mut value = Some(value.into());
-                get_context.with_context(subscriber, id, move |builder, _| {
-                    if builder.builder.attributes.is_none() {
-                        builder.builder.attributes = Some(Default::default());
+                get_context.with_context(subscriber, id, move |data| {
+                    if let Some(builder) = data.builder.as_mut() {
+                        if builder.attributes.is_none() {
+                            builder.attributes = Some(Default::default());
+                        }
+                        builder
+                            .attributes
+                            .as_mut()
+                            .unwrap()
+                            .push(KeyValue::new(key.take().unwrap(), value.take().unwrap()));
+                    } else {
+                        let span = data.parent_cx.span();
+                        let key_value = KeyValue::new(key.take().unwrap(), value.take().unwrap());
+                        span.set_attribute(key_value);
                     }
-                    builder
-                        .builder
-                        .attributes
-                        .as_mut()
-                        .unwrap()
-                        .push(KeyValue::new(key.take().unwrap(), value.take().unwrap()));
-                })
+                });
             }
         });
     }
@@ -231,8 +246,13 @@ impl OpenTelemetrySpanExt for tracing::Span {
         self.with_subscriber(move |(id, subscriber)| {
             let mut status = Some(status);
             if let Some(get_context) = subscriber.downcast_ref::<WithContext>() {
-                get_context.with_context(subscriber, id, move |builder, _| {
-                    builder.builder.status = status.take().unwrap();
+                get_context.with_context(subscriber, id, move |data| {
+                    if let Some(builder) = data.builder.as_mut() {
+                        builder.status = status.take().unwrap();
+                    } else {
+                        let span = data.parent_cx.span();
+                        span.set_status(status.take().unwrap());
+                    }
                 });
             }
         });
