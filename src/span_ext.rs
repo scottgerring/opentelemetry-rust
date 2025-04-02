@@ -158,17 +158,17 @@ pub trait OpenTelemetrySpanExt {
 }
 
 impl OpenTelemetrySpanExt for tracing::Span {
-    // TODO:ban should this really operate on a SpanContext instead of a Context?
     fn set_parent(&self, cx: Context) {
         let mut cx = Some(cx);
         self.with_subscriber(move |(id, subscriber)| {
             if let Some(get_context) = subscriber.downcast_ref::<WithContext>() {
+                // Set the parent OTel for the current span
                 get_context.with_context(subscriber, id, move |data| {
                     if let Some(cx) = cx.take() {
                         data.parent_cx = cx;
                         data.builder
                             .as_mut()
-                            .map(|builder| builder.sampling_result = None);
+                            .map(|builder| builder.sampling_result = None); // TODO Scott - why?
                     }
                 });
             }
@@ -207,8 +207,15 @@ impl OpenTelemetrySpanExt for tracing::Span {
         let mut cx = None;
         self.with_subscriber(|(id, subscriber)| {
             if let Some(get_context) = subscriber.downcast_ref::<WithContext>() {
-                get_context.with_context(subscriber, id, |data| {
+                get_context.with_context(subscriber, id, |data| {                
                     // TODO:ban create the span if it doesn't exist
+                    // if let Some(builder) = data.builder.take() {
+                    //     let span = builder.start_with_context(get_context.tracer(), &data.parent_cx);
+                    //     data.parent_cx = data.parent_cx.with_span(self);
+                    // }
+
+                    let (span_exists, has_parent) = (data.builder.is_none(), !data.parent_cx.span().span_context().is_remote() && data.parent_cx.span().span_context().is_valid());
+                    eprintln!("span_exists: {}, has_parent_ctx: {}", span_exists, has_parent);
                     cx = Some(data.parent_cx.clone());
                 })
             }
