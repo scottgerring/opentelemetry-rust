@@ -1303,10 +1303,13 @@ fn thread_id_integer(id: thread::ThreadId) -> u64 {
 
 #[cfg(test)]
 mod tests {
+    use crate::OpenTelemetrySpanExt;
+
     use super::*;
     use opentelemetry::trace::{SpanContext, TraceFlags, TracerProvider};
     use opentelemetry_sdk::trace::SpanExporter;
     use std::{collections::HashMap, error::Error, fmt::Display, time::SystemTime};
+    use tracing::trace_span;
     use tracing_subscriber::prelude::*;
 
     #[derive(Debug, Clone)]
@@ -1910,5 +1913,115 @@ mod tests {
         assert_eq!(otel.parent_span_id, child.span_context.span_id());
         // The second tokio child span should have the otel span as parent
         assert_eq!(child2.parent_span_id, otel.span_context.span_id());
+    }
+
+    #[test]
+    fn parent_context() {
+        let mut tracer = TestTracer::default();
+        let subscriber = tracing_subscriber::registry().with(layer().with_tracer(tracer.clone()));
+
+        tracing::subscriber::with_default(subscriber, || {
+            let root = trace_span!("root");
+            let child1 = trace_span!("child-1");
+            child1.set_parent(root.context());
+
+            let _enter_root = root.enter();
+            drop(_enter_root);
+
+            let child2 = trace_span!("child-2");
+            child2.set_parent(root.context());
+        });
+
+        // Let's check the spans
+        let spans = tracer.spans();
+        let parent = spans.iter().find(|span| span.name == "root").unwrap();
+        let child1 = spans.iter().find(|span| span.name == "child-1").unwrap();
+        let child2 = spans.iter().find(|span| span.name == "child-2").unwrap();
+        assert_eq!(parent.parent_span_id, otel::SpanId::INVALID);
+        assert_eq!(child1.parent_span_id, otel::SpanId::INVALID); // This is surprising
+        assert_eq!(child2.parent_span_id, parent.span_context.span_id());
+
+        assert!(false); // TODO - this test should fail and be fixed
+    }
+
+    #[test]
+    fn record_after() {
+        let mut tracer = TestTracer::default();
+        let subscriber = tracing_subscriber::registry().with(layer().with_tracer(tracer.clone()));
+
+        tracing::subscriber::with_default(subscriber, || {
+            let root = trace_span!("root", before = "before", after = "before");
+
+            root.record("before", "after");
+            let _enter_root = root.enter();
+            drop(_enter_root);
+            root.record("after", "after");
+        });
+
+        // Let's check the spans
+        let spans = tracer.spans();
+        let parent = spans.iter().find(|span| span.name == "root").unwrap();
+        assert_eq!(parent.parent_span_id, otel::SpanId::INVALID);
+        assert!(
+            parent
+                .attributes
+                .iter()
+                .filter(|kv| kv.key.as_str() == "before")
+                .any(|kv| kv.value.as_str() == "after")
+        );
+        // This fails
+        assert!(
+            parent
+                .attributes
+                .iter()
+                .filter(|kv| kv.key.as_str() == "after")
+                .any(|kv| kv.value.as_str() == "after")
+        );
+
+        assert!(false); // TODO - this test should fail and be fixed
+    }
+
+    #[test]
+    fn parent_context_2() {
+        let mut tracer = TestTracer::default();
+        let subscriber = tracing_subscriber::registry().with(layer().with_tracer(tracer.clone()));
+
+        tracing::subscriber::with_default(subscriber, || {
+            let root = trace_span!("root");
+            _ = root.enter();
+            let child1 = trace_span!("child-1");
+
+            child1.set_parent(root.context());
+            trace_span!(parent: &child1, "child-2");
+
+            child1.set_parent(root.context());
+            trace_span!(parent: &child1, "child-3");
+
+        });
+
+        // Let's check the spans
+        let spans = tracer.spans();
+        let root = spans
+            .iter()
+            .find(|span| span.name == "root")
+            .unwrap();
+        let child1 = spans
+            .iter()
+            .find(|span| span.name == "child-1")
+            .unwrap();
+        let child2 = spans
+            .iter()
+            .find(|span| span.name == "child-2")
+            .unwrap();
+        let child3 = spans
+            .iter()
+            .find(|span| span.name == "child-3")
+            .unwrap();
+        assert_eq!(root.parent_span_id, otel::SpanId::INVALID);
+        assert_eq!(child1.parent_span_id, root.span_context.span_id());
+        assert_eq!(child2.parent_span_id, child1.span_context.span_id());
+        assert_eq!(child3.parent_span_id, root.span_context.span_id()); // This is surprising, the parent should be `child1`
+
+        assert!(false); // TODO - this test should fail and be fixed
     }
 }
