@@ -168,7 +168,7 @@ Design choice: **builder fails fast**, runtime exporter surfaces errors through 
 
 ### B. OTLP-spec compliance review
 
-| Rank | Spec Requirement (section) | Current Status | Action | Importance | Code |
+| Rank | Spec Requirement (section) | Current Status | Action | Importance | Code | Spec |
 |-----:|---------------------------|---------------|--------|------------|------|------|
 | 1 | **MUST**: Exporters respect `RetryInfo` / `Retry-After` (Retry) | gRPC & HTTP ignore retry mechanisms. | Implement exponential back-off based on metadata / header. | High | [exporter/tonic/mod.rs](./src/exporter/tonic/mod.rs) / [exporter/http/mod.rs](./src/exporter/http/mod.rs) | <https://opentelemetry.io/docs/specs/otel/protocol/exporter/#retry> |
 | 2 | **MUST**: Logs `SeverityNumber` 1-24 mapping | Exporter doesn’t validate; may emit invalid values. | Clamp/convert values before serialize. | High | [logs.rs](./src/logs.rs) | <https://opentelemetry.io/docs/specs/otel/logs/data-model/#field-severitynumber> |
