@@ -69,13 +69,13 @@ Because **only one transport is valid per exporter**, `protocol` is currently a 
 
 Exporters must function both in binaries that start no async runtime and in services already running Tokio.  Consequently the crate provides **blocking** and **non-blocking** HTTP clients behind mutually-exclusive feature-flags.  The blocking variant is the default to ensure out-of-the-box operability; applications that already depend on Tokio can opt into an async client to avoid spawning extra threads.
 
-| Implementation | Feature flag | Blocking? | Underlying crate | Transports | Default? | Typical use case |
-|---------------|--------------|-----------|------------------|-----------|----------|------------------|
-| Reqwest (blocking) | `reqwest-blocking-client` | Yes | `reqwest::blocking` | HTTP/1.1 + Protobuf / JSON | ✅ | CLI tools, synchronous binaries, or hybrid apps where introducing Tokio is undesirable. A helper thread is spawned once at builder time.
-| Reqwest (async) | `reqwest-client` | No (Tokio) | `reqwest` | HTTP/1.1 + Protobuf / JSON | ❌ | Services that already run a Tokio runtime and prefer fully non-blocking exports.
-| Hyper | `hyper-client` | No (Tokio) | `hyper` | HTTP/1.1 + Protobuf / JSON | ❌ | Lean dependency footprint when both Reqwest features are disabled.
-| Tonic (gRPC) | `grpc-tonic` | No (Tokio) | `tonic` | gRPC + Protobuf | ❌ | Environments standardising on gRPC or collectors exposing only port 4317.
-| Custom | — | Depends | user-supplied | HTTP/1.1 (or custom) | ❌ | Embedding a bespoke `HttpClient` via `.with_http_client()`.
+| Implementation | Feature flag | Blocking? | Underlying crate | Transports | Typical use case |
+|---------------|--------------|-----------|------------------|-----------|------------------|
+| Reqwest (blocking) **(default)** | `reqwest-blocking-client` | Yes | `reqwest::blocking` | HTTP/1.1 → auto-upgrades to HTTP/2 over TLS | CLI tools, synchronous binaries, or hybrid apps where introducing Tokio is undesirable. A helper thread is spawned once at builder time.
+| Reqwest (async) | `reqwest-client` | No (Tokio) | `reqwest` | HTTP/1.1 → auto-upgrades to HTTP/2 over TLS | Services that already run a Tokio runtime and prefer fully non-blocking exports.
+| Hyper | `hyper-client` | No (Tokio) | `hyper` | HTTP/1.1 → auto-upgrades to HTTP/2 over TLS | Lean dependency footprint when both Reqwest features are disabled.
+| Tonic (gRPC) | `grpc-tonic` | No (Tokio) | `tonic` | HTTP/2 (gRPC) | Environments standardising on gRPC or collectors exposing only port 4317.
+| Custom | — | Depends | user-supplied | depends on implementation | Embedding a bespoke `HttpClient` via `.with_http_client()`.
 
 ---
 
