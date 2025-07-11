@@ -1,6 +1,6 @@
 # OpenTelemetry Rust – OTLP Architecture
 
-> This document describes how the **OTLP exporters** are organised and how they integrate with the wider OpenTelemetry Rust SDK.  Review findings and compliance tracking live in `opentelemetry-otlp/arch-review.md`.
+This document describes how the **OTLP exporters** are organised and how they integrate with the wider OpenTelemetry Rust SDK.  Review findings and compliance tracking live in `opentelemetry-otlp/arch-review.md`.
 
 ## Overview
 OpenTelemetry Protocol (OTLP) is the vendor-agnostic wire format used by OpenTelemetry to transport telemetry signals (traces, metrics, logs) from instrumented code to a backend (OTel Collector or compatible vendor). It supports:
@@ -17,18 +17,18 @@ OpenTelemetry Protocol (OTLP) is the vendor-agnostic wire format used by OpenTel
 ## 2. How OTLP Fits into `opentelemetry-rust`
 ```mermaid
 graph TD
-    A[Application code] --> B[`opentelemetry` API]
-    B --> C[`opentelemetry-sdk` processors]
-    C --> D[`opentelemetry-otlp` exporters]
+    A[Application code] --> B[opentelemetry-api]
+    B --> C[opentelemetry-sdk processors]
+    C --> D[opentelemetry-otlp exporters]
     D -->|gRPC / HTTP| E[OTel Collector / Backend]
     %% Auxiliary exporters
-    C --> F[`opentelemetry-jaeger`]
-    C --> G[`opentelemetry-zipkin`]
-    C --> H[`opentelemetry-prometheus`]
+    C --> F[opentelemetry-jaeger]
+    C --> G[opentelemetry-zipkin]
+    C --> H[opentelemetry-prometheus]
 ```
 Key points:
 * `opentelemetry-sdk` owns batching, aggregation, and lifecycle; **exporters only handle serialization + transport**.
-* OTLP exporters live in a **separate crate** to keep heavy deps (`tonic`, `reqwest`) optional.
+* OTLP exporters live in a separate crate to keep big deps (`tonic`, `reqwest`) optional.
 * Each signal (trace/metric/log) has its own exporter type but they share common builder + transport modules.
 
 ---
