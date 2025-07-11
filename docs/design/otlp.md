@@ -121,4 +121,51 @@ Signal builders read **signal-specific env vars** (e.g. `OTEL_EXPORTER_OTLP_TRAC
 * Feature gating errors (compression requested w/o feature)
 * Runtime errors are wrapped in `OTelSdkError` from the SDK.
 
-Design choice: **builder fails fast**, runtime exporter surfaces errors through `
+Builder fails fast, runtime exporter surfaces errors through `export()` futures so processors (or Retry logic) can decide whether to back-off, drop, or escalate.
+
+---
+
+## 8. Extension & Customisation Points
+1. **Custom headers / metadata** – `.with_metadata(map)` (gRPC) or `.with_headers()` (HTTP).
+2. **Compression** – `.with_compression(Compression::Gzip | Compression::Zstd)` behind feature-flags.
+3. **TLS** – via `TonicConfig` or `HttpConfig`; root-store helper features embed common CA bundles.
+4. **Alternate HTTP client** – inject any `HttpClient` implementation via `.with_http_client()`.
+5. **Protocol JSON** – switch to JSON payloads at build-time with the `http-json` feature.
+
+---
+
+## 9. Interactions with Other Exporters
+* **Prometheus exporter** (pull-based) bypasses OTLP entirely.
+* **Jaeger / Zipkin** exporters are alternative push paths; users typically pick *one* per signal.
+* **stdout exporter** may be enabled alongside OTLP in development.
+
+Example mixed configuration:
+```rust
+let otlp = SpanExporter::builder().with_tonic().build()?;
+let jaeger = opentelemetry_jaeger::new_agent_pipeline().install_simple()?;
+let provider = SdkTracerProvider::builder()
+    .with_batch_exporter(otlp)
+    .with_simple_exporter(jaeger)
+    .build();
+```
+
+---
+
+## 10. Key Architectural Decisions
+| Decision | Rationale |
+|----------|-----------|
+| *Builder pattern with marker types* | Compile-time guarantee that exactly one transport is chosen. |
+| *Transport-specific modules* | Keep heavy deps (`tonic`, `reqwest`) behind feature-flags to minimise compile times. |
+| *Env-vars hierarchy* | Matches OTLP spec; makes container/K8s configuration straightforward. |
+| *Separate crate* | Avoids pulling heavy deps into projects that don’t need OTLP. |
+| *Non-exhaustive error enums* | Allows adding new failure modes without breaking semver. |
+
+---
+
+### Source References
+* Builder traits – [`exporter/mod.rs`](../../opentelemetry-otlp/src/exporter/mod.rs)
+* HTTP transport – [`exporter/http/mod.rs`](../../opentelemetry-otlp/src/exporter/http/mod.rs)
+* gRPC transport – [`exporter/tonic/mod.rs`](../../opentelemetry-otlp/src/exporter/tonic/mod.rs)
+* Span exporter – [`span.rs`](../../opentelemetry-otlp/src/span.rs)
+* Metric exporter – [`metric.rs`](../../opentelemetry-otlp/src/metric.rs)
+* Logs exporter – [`logs.rs`](../../opentelemetry-otlp/src/logs.rs)
