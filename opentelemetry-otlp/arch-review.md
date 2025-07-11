@@ -11,7 +11,7 @@ For an architectural overview, see [`docs/design/otlp.md`](../docs/design/otlp.m
 | Rank | Topic | Observation | Possible Follow-up | Importance | Code |
 |-----:|-------|-------------|--------------------|------------|------|
 | 1 | Concurrency limits | No bounding of in-flight HTTP requests; high-throughput apps may self-DOS. | Add semaphore/tower layer; expose `with_max_in_flight(n)`. | High | [exporter/http/mod.rs](./src/exporter/http/mod.rs) |
-| 2 | Sync vs async HTTP default | Default `reqwest-blocking-client` spawns a thread per export; wasteful in async apps. | Make async client default or runtime-detect. | High | [exporter/mod.rs](./src/exporter/mod.rs) |
+| 2 | Sync vs async HTTP default | Blocking client built on a **helper thread** (see [PR #2431](https://github.com/open-telemetry/opentelemetry-rust/pull/2431)) to avoid panics when `tokio::main` is active (issue [#2400](https://github.com/open-telemetry/opentelemetry-rust/issues/2400)). Still incurs blocking I/O on caller thread. | Make async client default or detect runtime; or move blocking client onto dedicated worker thread pool. | Medium | [exporter/http/mod.rs#L145-L165](./src/exporter/http/mod.rs) |
 | 3 | Error taxonomy / partial-success surfacing | Runtime errors flattened; cannot distinguish retryable vs permanent. | Introduce `ExporterStatus` & surface `partial_success` info. | High | [exporter/mod.rs](./src/exporter/mod.rs) |
 | 4 | Logs exporter lacks batching | `LogExporter` is synchronous; risks back-pressure. | Implement `BatchLogProcessor` mirroring spans. | High | [logs.rs](./src/logs.rs) |
 | 5 | Protocol enum ambiguity | Passing wrong protocol is silently ignored. | Emit builder error or support dual-protocol fallback. | Medium-High | [lib.rs](./src/lib.rs) |
