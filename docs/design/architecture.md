@@ -21,10 +21,10 @@ Key points:
 3. **Exporters** translate OTel data into wire formats (OTLP, Prometheus, etc.) and handle transport.
 
 ## 3 Cross-cutting Components
-* ***Resource & Attributes** – common schema for describing process, host, and service; see the [resource spec](https://opentelemetry.io/docs/specs/otel/resource/).
-* ***Context & Propagation** – context management and carrier injection; see the [context propagation spec](https://opentelemetry.io/docs/specs/otel/context/).
-* ***Runtime model** – public APIs are runtime-agnostic; heavy I/O lives behind optional Tokio-based exporters; see the [SDK design guidelines](https://opentelemetry.io/docs/specs/otel/).
-* ***Error taxonomy** – SDK maps exporter/processor failures to `OTelError`; guided by the [error-handling recommendations](https://opentelemetry.io/docs/specs/otel/common/error-handling/).
+* **Resource & Attributes** – common schema for describing process, host, and service; see the [resource spec](https://opentelemetry.io/docs/specs/otel/resource/).
+* **Context & Propagation** – context management and carrier injection; see the [context propagation spec](https://opentelemetry.io/docs/specs/otel/context/).
+* **Runtime model** – public APIs are runtime-agnostic; heavy I/O lives behind optional Tokio-based exporters; see the [SDK design guidelines](https://opentelemetry.io/docs/specs/otel/).
+* **Error taxonomy** – see [ADR 001 Error Handling](../adr/001_error_handling.md).
 
 ## Detailed Design
 
