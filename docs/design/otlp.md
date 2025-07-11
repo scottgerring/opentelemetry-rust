@@ -2,6 +2,8 @@
 
 This document describes how the **OTLP exporters** are organised and how they integrate with the wider OpenTelemetry Rust SDK.  Review findings and compliance tracking live in `opentelemetry-otlp/arch-review.md`.
 
+> Reference the [OTLP specification](https://opentelemetry.io/docs/specs/otlp/) and [OTLP Protocol Exporter specification](https://opentelemetry.io/docs/specs/otel/protocol/exporter/). 
+
 ## Overview
 OpenTelemetry Protocol (OTLP) is the vendor-agnostic wire format used by OpenTelemetry to transport telemetry signals (traces, metrics, logs) from instrumented code to a backend (OTel Collector or compatible vendor). It supports:
 
@@ -14,7 +16,7 @@ OpenTelemetry Protocol (OTLP) is the vendor-agnostic wire format used by OpenTel
 * **Signals**  
   * Traces, Metrics, Logs – transported independently but share common envelope (`Resource`, `Scope` etc.)
 
-## 2. How OTLP Fits into `opentelemetry-rust`
+## 2. Overall Structure of `opentelemetry-rust` and OTLP
 ```mermaid
 graph TD
     A[Application code] --> B[opentelemetry-api]
@@ -146,7 +148,6 @@ Design choice: **builder fails fast**, runtime exporter surfaces errors through 
 ---
 
 ### Source References
-All code links below point into the `opentelemetry-otlp` crate:
 
 * Builder traits – [`exporter/mod.rs`](../../opentelemetry-otlp/src/exporter/mod.rs)
 * HTTP transport – [`exporter/http/mod.rs`](../../opentelemetry-otlp/src/exporter/http/mod.rs)

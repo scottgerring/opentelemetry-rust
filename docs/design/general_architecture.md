@@ -3,7 +3,7 @@
 ## 1 Purpose
 This document provides a stable, high-level description of how the OpenTelemetry Rust implementation is structured.  Detailed per-signal design notes live in their own files; this overview ties the pieces together.
 
-> Reference: the canonical [OpenTelemetry Specification](https://github.com/open-telemetry/opentelemetry-specification/)
+> Reference: the [OpenTelemetry Specification](https://opentelemetry.io/docs/specs/otel/) and [repository](https://github.com/open-telemetry/opentelemetry-specification/)
 
 ## 2 Layered Model
 ```mermaid
@@ -26,10 +26,17 @@ Key points:
 • **Runtime model** – most public APIs are **async-agnostic**; heavy I/O lives behind optional tokio-based exporters.<br/>
 • **Error taxonomy** – SDK wraps exporter/processor errors in `OTelError`; non-fatal failures are surfaced for back-pressure or log-only handling.
 
-## 4 Signals at a Glance
+## Detailed Design
+
+### Signals
+
 * **Traces** – [design doc](./traces.md) — trees of _spans_ capturing distributed work.
 * **Metrics** – [design doc](./metrics.md) — numerical time-series data.
 * **Logs** – [design doc](./logs.md) — timestamped events likely bridged from existing logging frameworks (`log`, `tracing`).
+
+### Everything Else
+
+* **OTLP* - [design doc](./otlp.md) - the OTLP subsystem
 
 ## 5 Extensibility Hooks
 | Layer | Customise via |
