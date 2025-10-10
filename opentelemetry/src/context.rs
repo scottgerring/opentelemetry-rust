@@ -18,7 +18,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::hash::{BuildHasherDefault, Hasher};
 use std::marker::PhantomData;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 #[cfg(feature = "futures")]
 mod future_ext;
@@ -451,6 +451,48 @@ impl fmt::Debug for Context {
     }
 }
 
+/// An observer trait for monitoring context transitions.
+///
+/// Implementors of this trait can observe when a context is entered or exited,
+/// allowing for custom logic to be executed during context switches.
+#[cfg(feature = "context_observer")]
+pub trait ContextObserver {
+    /// Called when a context is entered, allowing observers to react to the transition
+    /// from one context (`from`) to another (`to`).
+    fn on_context_enter(&self, from: &Context, to: &Context);
+
+    /// Called when a context is exited, allowing observers to react to the transition
+    /// from one context (`from`) to another (`to`).
+    fn on_context_exit(&self, from: &Context, to: &Context);
+}
+
+#[cfg(feature = "context_observer")]
+static GLOBAL_CONTEXT_OBSERVER: OnceLock<Arc<dyn ContextObserver + Send + Sync>> = OnceLock::new();
+
+/// A global observer for context transitions.
+///
+/// This struct provides static methods to set and get a global context observer.
+/// TODO:ban should this be in the global namespace?
+#[allow(missing_debug_implementations)]
+#[cfg(feature = "context_observer")]
+pub struct GlobalContextObserver;
+#[cfg(feature = "context_observer")]
+impl GlobalContextObserver {
+    /// Sets the global context observer, logging a warning if it was already set.
+    pub fn set(observer: Arc<dyn ContextObserver + Send + Sync>) {
+        if GLOBAL_CONTEXT_OBSERVER.set(observer).is_err() {
+            otel_warn!(
+                name: "GlobalContextObserver.SetFailed",
+                message = "Global context observer was already set. Ignoring new observer."
+            );
+        }
+    }
+    /// Returns the global context observer.
+    fn get<'a>() -> Option<&'a Arc<dyn ContextObserver + Send + Sync>> {
+        GLOBAL_CONTEXT_OBSERVER.get()
+    }
+}
+
 /// A guard that resets the current context to the prior context when dropped.
 #[derive(Debug)]
 pub struct ContextGuard {
@@ -526,6 +568,10 @@ impl ContextStack {
         // top of the [`ContextStack`] as the `current_cx`.
         let next_id = self.stack.len() + 1;
         if next_id < ContextStack::MAX_POS.into() {
+            #[cfg(feature = "context_observer")]
+            if let Some(observer) = GlobalContextObserver::get() {
+                observer.on_context_enter(&self.current_cx, &cx);
+            }
             let current_cx = std::mem::replace(&mut self.current_cx, cx);
             self.stack.push(Some(current_cx));
             next_id as u16
@@ -570,6 +616,10 @@ impl ContextStack {
             // empty context is always at the bottom of the stack if the
             // [`ContextStack`] is not empty.
             if let Some(Some(next_cx)) = self.stack.pop() {
+                #[cfg(feature = "context_observer")]
+                if let Some(observer) = GlobalContextObserver::get() {
+                    observer.on_context_exit(&self.current_cx, &next_cx);
+                }
                 self.current_cx = next_cx;
             }
         } else {

@@ -40,6 +40,7 @@ testing = ["trace"]
 logs = []
 spec_unstable_logs_enabled = ["logs"]
 internal-logs = ["tracing"]
+context_observer = []
 
 [dev-dependencies]
 opentelemetry_sdk = { path = "../opentelemetry-sdk", features = ["spec_unstable_logs_enabled"]} # for documentation tests
