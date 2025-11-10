@@ -182,6 +182,20 @@ impl TonicExporterBuilder {
         ),
         ExporterBuildError,
     > {
+        // Validate protocol is compatible with gRPC transport
+        match self.exporter_config.protocol {
+            crate::Protocol::Grpc => {
+                // Grpc is valid for gRPC transport
+            }
+            crate::Protocol::HttpBinary | crate::Protocol::HttpJson => {
+                return Err(ExporterBuildError::IncompatibleProtocol(
+                    self.exporter_config.protocol,
+                    "gRPC",
+                    "gRPC transport only supports Protocol::Grpc",
+                ));
+            }
+        }
+
         let compression = self.resolve_compression(signal_compression_var)?;
 
         let (headers_from_env, headers_for_logging) = parse_headers_from_env(signal_headers_var);

@@ -457,6 +457,16 @@ pub enum Protocol {
     HttpJson,
 }
 
+impl std::fmt::Display for Protocol {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Protocol::Grpc => write!(f, "grpc"),
+            Protocol::HttpBinary => write!(f, "http/protobuf"),
+            Protocol::HttpJson => write!(f, "http/json"),
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 #[doc(hidden)]
 /// Placeholder type when no exporter pipeline has been configured in telemetry pipeline.
@@ -476,5 +486,65 @@ pub mod tonic_types {
     pub mod transport {
         #[doc(no_inline)]
         pub use tonic::transport::{Certificate, ClientTlsConfig, Identity};
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_protocol_display() {
+        assert_eq!(Protocol::Grpc.to_string(), "grpc");
+        assert_eq!(Protocol::HttpBinary.to_string(), "http/protobuf");
+        assert_eq!(Protocol::HttpJson.to_string(), "http/json");
+    }
+
+    #[cfg(any(feature = "http-proto", feature = "http-json"))]
+    #[test]
+    fn test_http_exporter_rejects_grpc_protocol() {
+        let result = SpanExporter::builder()
+            .with_http()
+            .with_protocol(Protocol::Grpc)
+            .build();
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(err, ExporterBuildError::IncompatibleProtocol(..)));
+    }
+
+    #[cfg(feature = "grpc-tonic")]
+    #[test]
+    fn test_grpc_exporter_rejects_http_protocols() {
+        let result = SpanExporter::builder()
+            .with_tonic()
+            .with_protocol(Protocol::HttpBinary)
+            .build();
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(err, ExporterBuildError::IncompatibleProtocol(..)));
+
+        let result = SpanExporter::builder()
+            .with_tonic()
+            .with_protocol(Protocol::HttpJson)
+            .build();
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(err, ExporterBuildError::IncompatibleProtocol(..)));
+    }
+
+    #[cfg(all(feature = "http-proto", not(feature = "http-json")))]
+    #[test]
+    fn test_http_exporter_rejects_json_without_feature() {
+        let result = SpanExporter::builder()
+            .with_http()
+            .with_protocol(Protocol::HttpJson)
+            .build();
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(err, ExporterBuildError::IncompatibleProtocol(..)));
     }
 }

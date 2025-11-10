@@ -127,6 +127,10 @@ pub enum ExporterBuildError {
     #[error("invalid URI {0}. Reason {1}")]
     InvalidUri(String, String),
 
+    /// Protocol incompatible with transport.
+    #[error("protocol '{0}' is incompatible with {1} transport. {2}")]
+    IncompatibleProtocol(Protocol, &'static str, &'static str),
+
     /// Failed due to an internal error.
     /// The error message is intended for logging purposes only and should not
     /// be used to make programmatic decisions. It is implementation-specific

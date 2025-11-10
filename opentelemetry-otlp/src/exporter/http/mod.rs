@@ -180,6 +180,30 @@ impl HttpExporterBuilder {
             self.exporter_config.endpoint.as_deref(),
         )?;
 
+        // Validate protocol is compatible with HTTP transport
+        match self.exporter_config.protocol {
+            Protocol::Grpc => {
+                return Err(ExporterBuildError::IncompatibleProtocol(
+                    Protocol::Grpc,
+                    "HTTP",
+                    "Use Protocol::HttpBinary or Protocol::HttpJson for HTTP transport",
+                ));
+            }
+            Protocol::HttpJson => {
+                #[cfg(not(feature = "http-json"))]
+                {
+                    return Err(ExporterBuildError::IncompatibleProtocol(
+                        Protocol::HttpJson,
+                        "HTTP",
+                        "Enable 'http-json' feature to use HTTP JSON protocol",
+                    ));
+                }
+            }
+            Protocol::HttpBinary => {
+                // HttpBinary is always valid for HTTP transport
+            }
+        }
+
         let compression = self.resolve_compression(signal_compression_var)?;
 
         // Validate compression is supported at build time
