@@ -413,7 +413,7 @@ mod tests {
                        is_remote: false, \
                        trace_state: TraceState(None) \
                      }, \
-               entries count: 1, suppress_telemetry: false \
+               entries count: 2, suppress_telemetry: false \
              }"
         );
     }

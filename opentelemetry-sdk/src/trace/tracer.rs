@@ -62,6 +62,7 @@ impl SdkTracer {
         mut builder: SpanBuilder,
         attrs: Vec<KeyValue>,
         span_limits: SpanLimits,
+        parent_cx: &Context,
     ) -> Span {
         let mut attribute_options = builder.attributes.take().unwrap_or_default();
         for extra_attr in attrs {
@@ -133,6 +134,7 @@ impl SdkTracer {
         } else {
             SpanEvents::default()
         };
+
         Span::new(
             sc,
             Some(SpanData {
@@ -260,6 +262,7 @@ impl opentelemetry::trace::Tracer for SdkTracer {
                     builder,
                     samplings_result.attributes,
                     span_limits,
+                    parent_cx,
                 )
             }
             SamplingDecision::RecordOnly => {
@@ -276,6 +279,7 @@ impl opentelemetry::trace::Tracer for SdkTracer {
                     builder,
                     samplings_result.attributes,
                     span_limits,
+                    parent_cx,
                 )
             }
             SamplingDecision::Drop => {

@@ -1,10 +1,28 @@
 //! Context extensions for tracing
 use crate::{
     global, otel_debug,
-    trace::{Span, SpanContext, Status},
+    trace::{Span, SpanContext, SpanId, Status},
     Context, ContextGuard, KeyValue,
 };
 use std::{borrow::Cow, error::Error, sync::Mutex};
+
+/// Holds the local root span ID for the current execution context.
+///
+/// The local root span is the topmost span created within this service for a given trace.
+/// When a trace enters a service from upstream, the first span created locally becomes the
+/// local root, and its span ID is propagated to all descendant spans within this service.
+///
+/// TODO I am not super happy about storing this directly on the ctx; it feels weird to make it
+/// a first class concern. Some other options persued:
+///
+/// This is stored in context entries rather than on span objects because:
+/// 1. Storing on SpanData doesn't work because when creating a child span, you need to read the
+///    local root span ID from the parent context before creating the child's SpanData, but if
+///    the parent is a remote span context there is no SpanData to read from.
+/// 2. Storing on SynchronizedSpan doesn't work because it's wrapped in Arc for immutability, but
+///    the local root span ID must be computed from parent context after construction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct LocalRootSpanId(pub SpanId);
 
 // Re-export for compatability. This used to be contained here.
 pub use crate::context::{FutureExt, WithContext};
@@ -296,6 +314,9 @@ pub trait TraceContextExt {
     ///
     /// This is useful for building propagators.
     fn with_remote_span_context(&self, span_context: crate::trace::SpanContext) -> Self;
+
+    /// Returns the local root span ID from the current context, if available.
+    fn local_root_span_id(&self) -> Option<crate::trace::SpanId>;
 }
 
 impl TraceContextExt for Context {
@@ -321,6 +342,10 @@ impl TraceContextExt for Context {
 
     fn with_remote_span_context(&self, span_context: crate::trace::SpanContext) -> Self {
         self.with_synchronized_span(span_context.into())
+    }
+
+    fn local_root_span_id(&self) -> Option<crate::trace::SpanId> {
+        self.get::<LocalRootSpanId>().map(|lrs| lrs.0)
     }
 }
 

@@ -18,7 +18,9 @@ use std::collections::HashMap;
 use std::fmt;
 use std::hash::{BuildHasherDefault, Hasher};
 use std::marker::PhantomData;
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
+#[cfg(feature = "context_observer")]
+use std::sync::OnceLock;
 
 #[cfg(feature = "futures")]
 mod future_ext;
@@ -410,20 +412,38 @@ impl Context {
 
     #[cfg(feature = "trace")]
     pub(crate) fn current_with_synchronized_span(value: SynchronizedSpan) -> Self {
-        Self::map_current(|cx| Context {
-            span: Some(Arc::new(value)),
-            entries: cx.entries.clone(),
-            suppress_telemetry: cx.suppress_telemetry,
+        Self::map_current(|cx| {
+            // Local root span ID is the span ID from our parent context if it's there.
+            // if not, it's our own span ID.
+            let local_root_span_id = cx.get::<crate::trace::LocalRootSpanId>()
+                .map(|lrs| lrs.0)
+                .unwrap_or_else(|| value.span_context().span_id());
+
+            let mut new_cx = Context {
+                span: Some(Arc::new(value)),
+                entries: cx.entries.clone(),
+                suppress_telemetry: cx.suppress_telemetry,
+            };
+            new_cx = new_cx.with_value(crate::trace::LocalRootSpanId(local_root_span_id));
+            new_cx
         })
     }
 
     #[cfg(feature = "trace")]
     pub(crate) fn with_synchronized_span(&self, value: SynchronizedSpan) -> Self {
-        Context {
+        // Preserve the local root span ID from parent context if it exists,
+        // otherwise use this span's ID as the local root
+        let local_root_span_id = self.get::<crate::trace::LocalRootSpanId>()
+            .map(|lrs| lrs.0)
+            .unwrap_or_else(|| value.span_context().span_id());
+
+        let mut new_cx = Context {
             span: Some(Arc::new(value)),
             entries: self.entries.clone(),
             suppress_telemetry: self.suppress_telemetry,
-        }
+        };
+        new_cx = new_cx.with_value(crate::trace::LocalRootSpanId(local_root_span_id));
+        new_cx
     }
 }
 
