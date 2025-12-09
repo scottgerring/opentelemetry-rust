@@ -13,7 +13,7 @@ use futures_util::{
 };
 use opentelemetry::{otel_debug, otel_error};
 
-use crate::runtime::{to_interval_stream, Runtime};
+use crate::runtime::{to_interval_stream, Runtime, RuntimeSelector};
 use crate::{
     error::{OTelSdkError, OTelSdkResult},
     metrics::{exporter::PushMetricExporter, reader::SdkProducer},
@@ -108,6 +108,9 @@ where
     pub fn build(self) -> PeriodicReader<E> {
         let (message_sender, message_receiver) = mpsc::channel(256);
 
+        // Clone runtime for block_on before moving into worker closure
+        let runtime_for_block = self.runtime.clone();
+
         let worker = move |reader: &PeriodicReader<E>| {
             let runtime = self.runtime.clone();
             let reader = reader.clone();
@@ -137,6 +140,9 @@ where
             temporality = format!("{:?}", self.exporter.temporality()),
         );
 
+        // Create block_on function using the runtime cloned earlier
+        let block_on: BlockOnFn = Arc::new(move |future| runtime_for_block.block_on(future));
+
         PeriodicReader {
             exporter: Arc::new(self.exporter),
             inner: Arc::new(Mutex::new(PeriodicReaderInner {
@@ -144,6 +150,7 @@ where
                 is_shutdown: false,
                 sdk_producer_or_worker: ProducerOrWorker::Worker(Box::new(worker)),
             })),
+            block_on,
         }
     }
 }
@@ -188,6 +195,8 @@ where
 pub struct PeriodicReader<E: PushMetricExporter> {
     exporter: Arc<E>,
     inner: Arc<Mutex<PeriodicReaderInner<E>>>,
+    /// Runtime-specific block_on implementation
+    block_on: BlockOnFn,
 }
 
 impl<E: PushMetricExporter> Clone for PeriodicReader<E> {
@@ -195,17 +204,27 @@ impl<E: PushMetricExporter> Clone for PeriodicReader<E> {
         Self {
             exporter: Arc::clone(&self.exporter),
             inner: Arc::clone(&self.inner),
+            block_on: Arc::clone(&self.block_on),
         }
     }
 }
 
 impl<E: PushMetricExporter> PeriodicReader<E> {
-    /// Configuration options for a periodic reader
-    pub fn builder<RT>(exporter: E, runtime: RT) -> PeriodicReaderBuilder<E, RT>
+    /// Configuration options for a periodic reader with an explicit runtime.
+    pub fn builder_with_runtime<RT>(exporter: E, runtime: RT) -> PeriodicReaderBuilder<E, RT>
     where
         RT: Runtime,
     {
         PeriodicReaderBuilder::new(exporter, runtime)
+    }
+
+    /// Configuration options for a periodic reader using the default [`RuntimeSelector`].
+    ///
+    /// The `RuntimeSelector` automatically detects the appropriate runtime strategy
+    /// based on the environment (multi-threaded tokio, single-threaded tokio, or no runtime).
+    #[cfg(any(feature = "rt-tokio", feature = "rt-tokio-current-thread"))]
+    pub fn builder(exporter: E) -> PeriodicReaderBuilder<E, RuntimeSelector> {
+        PeriodicReaderBuilder::new(exporter, RuntimeSelector::new())
     }
 }
 
@@ -214,6 +233,15 @@ impl<E: PushMetricExporter> fmt::Debug for PeriodicReader<E> {
         f.debug_struct("PeriodicReader").finish()
     }
 }
+
+/// Type-erased block_on function for runtime-agnostic blocking
+type BlockOnFn = Arc<
+    dyn Fn(
+            std::pin::Pin<Box<dyn std::future::Future<Output = Result<OTelSdkResult, oneshot::Canceled>> + Send>>,
+        ) -> Result<OTelSdkResult, oneshot::Canceled>
+        + Send
+        + Sync,
+>;
 
 struct PeriodicReaderInner<E: PushMetricExporter> {
     message_sender: mpsc::Sender<Message>,
@@ -393,7 +421,7 @@ impl<E: PushMetricExporter> MetricReader for PeriodicReader<E> {
 
         drop(inner); // don't hold lock when blocking on future
 
-        futures_executor::block_on(receiver)
+        (self.block_on)(Box::pin(receiver))
             .map_err(|err| OTelSdkError::InternalFailure(err.to_string()))
             .and_then(|res| res)
     }
@@ -414,7 +442,7 @@ impl<E: PushMetricExporter> MetricReader for PeriodicReader<E> {
             .map_err(|e| OTelSdkError::InternalFailure(e.to_string()))?;
         drop(inner); // don't hold lock when blocking on future
 
-        let shutdown_result = futures_executor::block_on(receiver)
+        let shutdown_result = (self.block_on)(Box::pin(receiver))
             .map_err(|err| OTelSdkError::InternalFailure(err.to_string()))?;
 
         // Acquire the lock again to set the shutdown flag

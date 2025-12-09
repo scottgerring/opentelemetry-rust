@@ -1,6 +1,6 @@
 use crate::error::{OTelSdkError, OTelSdkResult};
 use crate::resource::Resource;
-use crate::runtime::{to_interval_stream, RuntimeChannel, TrySend};
+use crate::runtime::{to_interval_stream, RuntimeChannel, RuntimeSelector, TrySend};
 use crate::trace::BatchConfig;
 use crate::trace::Span;
 use crate::trace::SpanProcessor;
@@ -90,6 +90,9 @@ pub struct BatchSpanProcessor<R: RuntimeChannel> {
 
     // Track the maximum queue size that was configured for this processor
     max_queue_size: usize,
+
+    // Runtime for blocking operations
+    runtime: R,
 }
 
 impl<R: RuntimeChannel> fmt::Debug for BatchSpanProcessor<R> {
@@ -131,7 +134,7 @@ impl<R: RuntimeChannel> SpanProcessor for BatchSpanProcessor<R> {
                 OTelSdkError::InternalFailure(format!("Failed to send flush message: {err}"))
             })?;
 
-        futures_executor::block_on(res_receiver).map_err(|err| {
+        self.runtime.block_on(res_receiver).map_err(|err| {
             OTelSdkError::InternalFailure(format!("Flush response channel error: {err}"))
         })?
     }
@@ -155,7 +158,7 @@ impl<R: RuntimeChannel> SpanProcessor for BatchSpanProcessor<R> {
                 OTelSdkError::InternalFailure(format!("Failed to send shutdown message: {err}"))
             })?;
 
-        futures_executor::block_on(res_receiver).map_err(|err| {
+        self.runtime.block_on(res_receiver).map_err(|err| {
             OTelSdkError::InternalFailure(format!("Shutdown response channel error: {err}"))
         })?
     }
@@ -402,11 +405,12 @@ impl<R: RuntimeChannel> BatchSpanProcessor<R> {
             message_sender,
             dropped_spans_count: AtomicUsize::new(0),
             max_queue_size,
+            runtime,
         }
     }
 
-    /// Create a new batch processor builder
-    pub fn builder<E>(exporter: E, runtime: R) -> BatchSpanProcessorBuilder<E, R>
+    /// Create a new batch processor builder with an explicit runtime.
+    pub fn builder_with_runtime<E>(exporter: E, runtime: R) -> BatchSpanProcessorBuilder<E, R>
     where
         E: SpanExporter,
     {
@@ -414,6 +418,25 @@ impl<R: RuntimeChannel> BatchSpanProcessor<R> {
             exporter,
             config: Default::default(),
             runtime,
+        }
+    }
+}
+
+/// Methods for creating a [`BatchSpanProcessor`] with the default [`RuntimeSelector`].
+#[cfg(any(feature = "rt-tokio", feature = "rt-tokio-current-thread"))]
+impl BatchSpanProcessor<RuntimeSelector> {
+    /// Create a new batch processor builder using the default [`RuntimeSelector`].
+    ///
+    /// The `RuntimeSelector` automatically detects the appropriate runtime strategy
+    /// based on the environment (multi-threaded tokio, single-threaded tokio, or no runtime).
+    pub fn builder<E>(exporter: E) -> BatchSpanProcessorBuilder<E, RuntimeSelector>
+    where
+        E: SpanExporter,
+    {
+        BatchSpanProcessorBuilder {
+            exporter,
+            config: Default::default(),
+            runtime: RuntimeSelector::new(),
         }
     }
 }

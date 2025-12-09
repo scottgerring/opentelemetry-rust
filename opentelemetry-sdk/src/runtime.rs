@@ -273,3 +273,162 @@ impl Runtime for NoAsync {
         }
     }
 }
+
+/// The inner runtime kind used by [`RuntimeSelector`].
+#[cfg(feature = "experimental_async_runtime")]
+#[derive(Debug, Clone)]
+enum RuntimeKind {
+    /// Multi-threaded tokio runtime
+    #[cfg(feature = "rt-tokio")]
+    Tokio(Tokio),
+    /// Single-threaded tokio runtime (also used when not inside a tokio runtime but rt-tokio is enabled)
+    #[cfg(feature = "rt-tokio")]
+    TokioCurrentThread(TokioCurrentThread),
+    /// Only rt-tokio-current-thread feature enabled
+    #[cfg(all(feature = "rt-tokio-current-thread", not(feature = "rt-tokio")))]
+    TokioCurrentThreadOnly(TokioCurrentThread),
+    /// No tokio features enabled
+    #[cfg(not(any(feature = "rt-tokio", feature = "rt-tokio-current-thread")))]
+    NoAsync(NoAsync),
+}
+
+/// A runtime that automatically selects the appropriate runtime strategy.
+///
+/// This runtime detects at construction time the best strategy based on the environment
+/// and enabled features, then delegates all operations to the selected runtime:
+///
+/// - If `rt-tokio` is enabled and running in a multi-threaded tokio runtime → uses [`Tokio`]
+/// - If `rt-tokio` is enabled and running in a single-threaded tokio runtime → uses [`TokioCurrentThread`]
+/// - If `rt-tokio` is enabled but not in a tokio runtime → uses [`TokioCurrentThread`] (spawns on dedicated thread)
+/// - If only `rt-tokio-current-thread` is enabled → uses [`TokioCurrentThread`]
+/// - If no tokio features are enabled → uses [`NoAsync`]
+///
+/// This is the recommended runtime to use as it eliminates the need for users
+/// to manually choose between runtime implementations based on their setup.
+///
+/// # Example
+///
+/// ```ignore
+/// use opentelemetry_sdk::runtime::RuntimeSelector;
+///
+/// // Works correctly regardless of runtime configuration
+/// let processor = BatchSpanProcessor::builder(exporter, RuntimeSelector::new()).build();
+/// ```
+#[cfg(feature = "experimental_async_runtime")]
+#[cfg_attr(docsrs, doc(cfg(feature = "experimental_async_runtime")))]
+#[derive(Debug, Clone)]
+pub struct RuntimeSelector {
+    inner: RuntimeKind,
+}
+
+#[cfg(feature = "experimental_async_runtime")]
+impl RuntimeSelector {
+    /// Create a new `RuntimeSelector` that auto-detects the appropriate runtime.
+    pub fn new() -> Self {
+        #[cfg(feature = "rt-tokio")]
+        {
+            if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                return match handle.runtime_flavor() {
+                    tokio::runtime::RuntimeFlavor::CurrentThread => Self {
+                        inner: RuntimeKind::TokioCurrentThread(TokioCurrentThread),
+                    },
+                    _ => Self {
+                        inner: RuntimeKind::Tokio(Tokio),
+                    },
+                };
+            }
+            // Not in a tokio runtime but rt-tokio is enabled: use TokioCurrentThread
+            // which spawns on a dedicated thread
+            return Self {
+                inner: RuntimeKind::TokioCurrentThread(TokioCurrentThread),
+            };
+        }
+
+        #[cfg(all(feature = "rt-tokio-current-thread", not(feature = "rt-tokio")))]
+        {
+            return Self {
+                inner: RuntimeKind::TokioCurrentThreadOnly(TokioCurrentThread),
+            };
+        }
+
+        #[cfg(not(any(feature = "rt-tokio", feature = "rt-tokio-current-thread")))]
+        {
+            Self {
+                inner: RuntimeKind::NoAsync(NoAsync),
+            }
+        }
+    }
+}
+
+#[cfg(feature = "experimental_async_runtime")]
+impl Default for RuntimeSelector {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(feature = "experimental_async_runtime")]
+impl Runtime for RuntimeSelector {
+    fn spawn<F>(&self, future: F)
+    where
+        F: Future<Output = ()> + Send + 'static,
+    {
+        match &self.inner {
+            #[cfg(feature = "rt-tokio")]
+            RuntimeKind::Tokio(rt) => rt.spawn(future),
+            #[cfg(feature = "rt-tokio")]
+            RuntimeKind::TokioCurrentThread(rt) => rt.spawn(future),
+            #[cfg(all(feature = "rt-tokio-current-thread", not(feature = "rt-tokio")))]
+            RuntimeKind::TokioCurrentThreadOnly(rt) => rt.spawn(future),
+            #[cfg(not(any(feature = "rt-tokio", feature = "rt-tokio-current-thread")))]
+            RuntimeKind::NoAsync(rt) => rt.spawn(future),
+        }
+    }
+
+    fn delay(&self, duration: Duration) -> impl Future<Output = ()> + Send + 'static {
+        // Clone self to capture the runtime kind in the async block
+        let inner = self.inner.clone();
+        async move {
+            match inner {
+                #[cfg(feature = "rt-tokio")]
+                RuntimeKind::Tokio(rt) => rt.delay(duration).await,
+                #[cfg(feature = "rt-tokio")]
+                RuntimeKind::TokioCurrentThread(rt) => rt.delay(duration).await,
+                #[cfg(all(feature = "rt-tokio-current-thread", not(feature = "rt-tokio")))]
+                RuntimeKind::TokioCurrentThreadOnly(rt) => rt.delay(duration).await,
+                #[cfg(not(any(feature = "rt-tokio", feature = "rt-tokio-current-thread")))]
+                RuntimeKind::NoAsync(rt) => rt.delay(duration).await,
+            }
+        }
+    }
+}
+
+#[cfg(all(
+    feature = "experimental_async_runtime",
+    any(feature = "rt-tokio", feature = "rt-tokio-current-thread")
+))]
+#[cfg_attr(
+    docsrs,
+    doc(cfg(all(
+        feature = "experimental_async_runtime",
+        any(feature = "rt-tokio", feature = "rt-tokio-current-thread")
+    )))
+)]
+impl RuntimeChannel for RuntimeSelector {
+    type Receiver<T: Debug + Send> = tokio_stream::wrappers::ReceiverStream<T>;
+    type Sender<T: Debug + Send> = tokio::sync::mpsc::Sender<T>;
+
+    fn batch_message_channel<T: Debug + Send>(
+        &self,
+        capacity: usize,
+    ) -> (Self::Sender<T>, Self::Receiver<T>) {
+        match &self.inner {
+            #[cfg(feature = "rt-tokio")]
+            RuntimeKind::Tokio(rt) => rt.batch_message_channel(capacity),
+            #[cfg(feature = "rt-tokio")]
+            RuntimeKind::TokioCurrentThread(rt) => rt.batch_message_channel(capacity),
+            #[cfg(all(feature = "rt-tokio-current-thread", not(feature = "rt-tokio")))]
+            RuntimeKind::TokioCurrentThreadOnly(rt) => rt.batch_message_channel(capacity),
+        }
+    }
+}

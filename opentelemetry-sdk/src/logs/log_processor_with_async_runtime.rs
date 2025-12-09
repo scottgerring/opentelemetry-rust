@@ -17,7 +17,7 @@ use std::{
 
 use super::{BatchConfig, LogProcessor};
 #[cfg(feature = "experimental_async_runtime")]
-use crate::runtime::{to_interval_stream, RuntimeChannel, TrySend};
+use crate::runtime::{to_interval_stream, RuntimeChannel, RuntimeSelector, TrySend};
 use futures_channel::oneshot;
 use futures_util::{
     future::{self, Either},
@@ -48,6 +48,9 @@ pub struct BatchLogProcessor<R: RuntimeChannel> {
 
     // Track the maximum queue size that was configured for this processor
     max_queue_size: usize,
+
+    // Runtime for blocking operations
+    runtime: R,
 }
 
 impl<R: RuntimeChannel> Debug for BatchLogProcessor<R> {
@@ -82,7 +85,8 @@ impl<R: RuntimeChannel> LogProcessor for BatchLogProcessor<R> {
             .try_send(BatchMessage::Flush(Some(res_sender)))
             .map_err(|err| OTelSdkError::InternalFailure(format!("{err:?}")))?;
 
-        futures_executor::block_on(res_receiver)
+        self.runtime
+            .block_on(res_receiver)
             .map_err(|err| OTelSdkError::InternalFailure(format!("{err:?}")))
             .and_then(std::convert::identity)
     }
@@ -103,7 +107,8 @@ impl<R: RuntimeChannel> LogProcessor for BatchLogProcessor<R> {
             .try_send(BatchMessage::Shutdown(res_sender))
             .map_err(|err| OTelSdkError::InternalFailure(format!("{err:?}")))?;
 
-        futures_executor::block_on(res_receiver)
+        self.runtime
+            .block_on(res_receiver)
             .map_err(|err| OTelSdkError::InternalFailure(format!("{err:?}")))
             .and_then(std::convert::identity)
     }
@@ -210,11 +215,12 @@ impl<R: RuntimeChannel> BatchLogProcessor<R> {
             message_sender,
             dropped_logs_count: AtomicUsize::new(0),
             max_queue_size: config.max_queue_size,
+            runtime,
         }
     }
 
-    /// Create a new batch processor builder
-    pub fn builder<E>(exporter: E, runtime: R) -> BatchLogProcessorBuilder<E, R>
+    /// Create a new batch processor builder with an explicit runtime.
+    pub fn builder_with_runtime<E>(exporter: E, runtime: R) -> BatchLogProcessorBuilder<E, R>
     where
         E: LogExporter,
     {
@@ -222,6 +228,25 @@ impl<R: RuntimeChannel> BatchLogProcessor<R> {
             exporter,
             config: Default::default(),
             runtime,
+        }
+    }
+}
+
+/// Methods for creating a [`BatchLogProcessor`] with the default [`RuntimeSelector`].
+#[cfg(any(feature = "rt-tokio", feature = "rt-tokio-current-thread"))]
+impl BatchLogProcessor<RuntimeSelector> {
+    /// Create a new batch processor builder using the default [`RuntimeSelector`].
+    ///
+    /// The `RuntimeSelector` automatically detects the appropriate runtime strategy
+    /// based on the environment (multi-threaded tokio, single-threaded tokio, or no runtime).
+    pub fn builder<E>(exporter: E) -> BatchLogProcessorBuilder<E, RuntimeSelector>
+    where
+        E: LogExporter,
+    {
+        BatchLogProcessorBuilder {
+            exporter,
+            config: Default::default(),
+            runtime: RuntimeSelector::new(),
         }
     }
 }
