@@ -70,6 +70,34 @@ pub trait SpanExporter: Send + Sync + Debug {
         Ok(())
     }
 
+    /// Asynchronously shuts down the exporter with the given timeout.
+    ///
+    /// This is the async version of [`shutdown_with_timeout`](SpanExporter::shutdown_with_timeout).
+    /// The default implementation wraps the sync version.
+    fn shutdown_with_timeout_async(
+        &mut self,
+        timeout: Duration,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = OTelSdkResult> + Send + '_>> {
+        Box::pin(std::future::ready(self.shutdown_with_timeout(timeout)))
+    }
+
+    /// Asynchronously shuts down the exporter with default timeout.
+    fn shutdown_async(
+        &mut self,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = OTelSdkResult> + Send + '_>> {
+        self.shutdown_with_timeout_async(Duration::from_secs(5))
+    }
+
+    /// Asynchronously flushes any spans held by the exporter.
+    ///
+    /// This is the async version of [`force_flush`](SpanExporter::force_flush).
+    /// The default implementation wraps the sync version.
+    fn force_flush_async(
+        &mut self,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = OTelSdkResult> + Send + '_>> {
+        Box::pin(std::future::ready(self.force_flush()))
+    }
+
     /// Set the resource for the exporter.
     fn set_resource(&mut self, _resource: &Resource) {}
 }

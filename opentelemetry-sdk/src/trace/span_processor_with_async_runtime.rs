@@ -124,6 +124,17 @@ impl<R: RuntimeChannel> SpanProcessor for BatchSpanProcessor<R> {
     }
 
     fn force_flush(&self) -> OTelSdkResult {
+        // Detect if we're inside a tokio runtime. Calling sync methods from within
+        // an async runtime will deadlock on single-threaded runtimes.
+        #[cfg(feature = "rt-tokio")]
+        if tokio::runtime::Handle::try_current().is_ok() {
+            return Err(OTelSdkError::InternalFailure(
+                "Cannot call force_flush() from within an async runtime. \
+                 Use force_flush_async().await instead to avoid deadlocks."
+                    .into(),
+            ));
+        }
+
         let (res_sender, res_receiver) = oneshot::channel();
         self.message_sender
             .try_send(BatchMessage::Flush(Some(res_sender)))
@@ -137,6 +148,17 @@ impl<R: RuntimeChannel> SpanProcessor for BatchSpanProcessor<R> {
     }
 
     fn shutdown_with_timeout(&self, _timeout: Duration) -> OTelSdkResult {
+        // Detect if we're inside a tokio runtime. Calling sync methods from within
+        // an async runtime will deadlock on single-threaded runtimes.
+        #[cfg(feature = "rt-tokio")]
+        if tokio::runtime::Handle::try_current().is_ok() {
+            return Err(OTelSdkError::InternalFailure(
+                "Cannot call shutdown() from within an async runtime. \
+                 Use shutdown_async().await instead to avoid deadlocks."
+                    .into(),
+            ));
+        }
+
         let dropped_spans = self.dropped_spans_count.load(Ordering::Relaxed);
         let max_queue_size = self.max_queue_size;
         if dropped_spans > 0 {
@@ -158,6 +180,58 @@ impl<R: RuntimeChannel> SpanProcessor for BatchSpanProcessor<R> {
         futures_executor::block_on(res_receiver).map_err(|err| {
             OTelSdkError::InternalFailure(format!("Shutdown response channel error: {err}"))
         })?
+    }
+
+    fn force_flush_async(
+        &self,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = OTelSdkResult> + Send + '_>> {
+        let (res_sender, res_receiver) = oneshot::channel();
+        if let Err(err) = self
+            .message_sender
+            .try_send(BatchMessage::Flush(Some(res_sender)))
+        {
+            return Box::pin(std::future::ready(Err(OTelSdkError::InternalFailure(
+                format!("Failed to send flush message: {err}"),
+            ))));
+        }
+
+        Box::pin(async move {
+            res_receiver.await.map_err(|err| {
+                OTelSdkError::InternalFailure(format!("Flush response channel error: {err}"))
+            })?
+        })
+    }
+
+    fn shutdown_with_timeout_async(
+        &self,
+        _timeout: Duration,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = OTelSdkResult> + Send + '_>> {
+        let dropped_spans = self.dropped_spans_count.load(Ordering::Relaxed);
+        let max_queue_size = self.max_queue_size;
+        if dropped_spans > 0 {
+            otel_warn!(
+                name: "BatchSpanProcessor.Shutdown",
+                dropped_spans = dropped_spans,
+                max_queue_size = max_queue_size,
+                message = "Spans were dropped due to a full or closed queue. The count represents the total count of span records dropped in the lifetime of the BatchSpanProcessor. Consider increasing the queue size and/or decrease delay between intervals."
+            );
+        }
+
+        let (res_sender, res_receiver) = oneshot::channel();
+        if let Err(err) = self
+            .message_sender
+            .try_send(BatchMessage::Shutdown(res_sender))
+        {
+            return Box::pin(std::future::ready(Err(OTelSdkError::InternalFailure(
+                format!("Failed to send shutdown message: {err}"),
+            ))));
+        }
+
+        Box::pin(async move {
+            res_receiver.await.map_err(|err| {
+                OTelSdkError::InternalFailure(format!("Shutdown response channel error: {err}"))
+            })?
+        })
     }
 
     fn set_resource(&mut self, resource: &Resource) {
@@ -578,9 +652,9 @@ mod tests {
         });
         tokio::time::sleep(Duration::from_secs(1)).await; // skip the first
         processor.on_end(new_test_export_span_data());
-        let flush_res = processor.force_flush();
+        let flush_res = processor.force_flush_async().await;
         assert!(flush_res.is_ok());
-        let _shutdown_result = processor.shutdown();
+        let _shutdown_result = processor.shutdown_async().await;
 
         assert!(
             tokio::time::timeout(Duration::from_secs(5), handle)
@@ -605,13 +679,13 @@ mod tests {
         let processor = BatchSpanProcessor::new(exporter, config, runtime::TokioCurrentThread);
         tokio::time::sleep(Duration::from_secs(1)).await; // skip the first
         processor.on_end(new_test_export_span_data());
-        let flush_res = processor.force_flush();
+        let flush_res = processor.force_flush_async().await;
         if time_out {
             assert!(flush_res.is_err());
         } else {
             assert!(flush_res.is_ok());
         }
-        let shutdown_res = processor.shutdown();
+        let shutdown_res = processor.shutdown_async().await;
         assert!(shutdown_res.is_ok());
     }
 
@@ -658,8 +732,11 @@ mod tests {
         processor.on_end(new_test_export_span_data());
 
         // Wait until everything has been exported.
-        processor.force_flush().expect("force flush failed");
-        processor.shutdown().expect("shutdown failed");
+        processor
+            .force_flush_async()
+            .await
+            .expect("force flush failed");
+        processor.shutdown_async().await.expect("shutdown failed");
 
         // Expect at least one period with >1 export in flight.
         assert!(
@@ -694,8 +771,11 @@ mod tests {
         processor.on_end(new_test_export_span_data());
         processor.on_end(new_test_export_span_data());
 
-        processor.force_flush().expect("force flush failed");
-        processor.shutdown().expect("shutdown failed");
+        processor
+            .force_flush_async()
+            .await
+            .expect("force flush failed");
+        processor.shutdown_async().await.expect("shutdown failed");
 
         // There must never have been more than one export in flight.
         assert!(

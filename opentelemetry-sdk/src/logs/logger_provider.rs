@@ -129,6 +129,65 @@ impl SdkLoggerProvider {
     pub fn shutdown(&self) -> OTelSdkResult {
         self.shutdown_with_timeout(Duration::from_secs(5))
     }
+
+    /// Asynchronously force flush all remaining logs in log processors.
+    ///
+    /// This is the async version of [`force_flush`](Self::force_flush).
+    /// Use this when calling from an async context to avoid blocking.
+    pub async fn force_flush_async(&self) -> OTelSdkResult {
+        let mut results = Vec::new();
+        for processor in self.log_processors() {
+            results.push(processor.force_flush_async().await);
+        }
+        if results.iter().all(|r| r.is_ok()) {
+            Ok(())
+        } else {
+            Err(OTelSdkError::InternalFailure(format!("errs: {results:?}")))
+        }
+    }
+
+    /// Asynchronously shuts down this `LoggerProvider` with the given timeout.
+    ///
+    /// This is the async version of [`shutdown_with_timeout`](Self::shutdown_with_timeout).
+    /// Use this when calling from an async context to avoid blocking.
+    pub async fn shutdown_with_timeout_async(&self, timeout: Duration) -> OTelSdkResult {
+        otel_debug!(
+            name: "LoggerProvider.ShutdownAsyncInvokedByUser",
+        );
+        if self
+            .inner
+            .is_shutdown
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+        {
+            // propagate the shutdown signal to processors
+            let mut results = Vec::new();
+            for processor in &self.inner.processors {
+                results.push(processor.shutdown_with_timeout_async(timeout).await);
+            }
+            if results.iter().all(|res| res.is_ok()) {
+                Ok(())
+            } else {
+                Err(OTelSdkError::InternalFailure(format!(
+                    "Shutdown errors: {:?}",
+                    results
+                        .into_iter()
+                        .filter_map(Result::err)
+                        .collect::<Vec<_>>()
+                )))
+            }
+        } else {
+            Err(OTelSdkError::AlreadyShutdown)
+        }
+    }
+
+    /// Asynchronously shuts down this `LoggerProvider` with default timeout.
+    ///
+    /// This is the async version of [`shutdown`](Self::shutdown).
+    /// Use this when calling from an async context to avoid blocking.
+    pub async fn shutdown_async(&self) -> OTelSdkResult {
+        self.shutdown_with_timeout_async(Duration::from_secs(5)).await
+    }
 }
 
 #[derive(Debug)]

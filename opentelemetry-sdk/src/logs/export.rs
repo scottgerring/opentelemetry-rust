@@ -143,6 +143,24 @@ pub trait LogExporter: Send + Sync + Debug {
         self.shutdown_with_timeout(time::Duration::from_secs(5))
     }
 
+    /// Asynchronously shuts down the exporter with the given timeout.
+    ///
+    /// This is the async version of [`shutdown_with_timeout`](LogExporter::shutdown_with_timeout).
+    /// The default implementation wraps the sync version.
+    fn shutdown_with_timeout_async(
+        &self,
+        timeout: time::Duration,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = OTelSdkResult> + Send + '_>> {
+        Box::pin(std::future::ready(self.shutdown_with_timeout(timeout)))
+    }
+
+    /// Asynchronously shuts down the exporter with default timeout.
+    fn shutdown_async(
+        &self,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = OTelSdkResult> + Send + '_>> {
+        self.shutdown_with_timeout_async(time::Duration::from_secs(5))
+    }
+
     /// Check if logs are enabled.
     fn event_enabled(&self, _level: Severity, _target: &str, _name: Option<&str>) -> bool {
         // By default, all logs are enabled

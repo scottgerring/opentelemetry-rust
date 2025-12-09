@@ -378,6 +378,17 @@ impl<E: PushMetricExporter> MetricReader for PeriodicReader<E> {
     }
 
     fn force_flush(&self) -> OTelSdkResult {
+        // Detect if we're inside a tokio runtime. Calling sync methods from within
+        // an async runtime will deadlock on single-threaded runtimes.
+        #[cfg(feature = "rt-tokio")]
+        if tokio::runtime::Handle::try_current().is_ok() {
+            return Err(OTelSdkError::InternalFailure(
+                "Cannot call force_flush() from within an async runtime. \
+                 Use force_flush_async().await instead to avoid deadlocks."
+                    .into(),
+            ));
+        }
+
         let mut inner = self
             .inner
             .lock()
@@ -399,6 +410,17 @@ impl<E: PushMetricExporter> MetricReader for PeriodicReader<E> {
     }
 
     fn shutdown_with_timeout(&self, _timeout: Duration) -> OTelSdkResult {
+        // Detect if we're inside a tokio runtime. Calling sync methods from within
+        // an async runtime will deadlock on single-threaded runtimes.
+        #[cfg(feature = "rt-tokio")]
+        if tokio::runtime::Handle::try_current().is_ok() {
+            return Err(OTelSdkError::InternalFailure(
+                "Cannot call shutdown() from within an async runtime. \
+                 Use shutdown_async().await instead to avoid deadlocks."
+                    .into(),
+            ));
+        }
+
         let mut inner = self
             .inner
             .lock()
@@ -425,6 +447,70 @@ impl<E: PushMetricExporter> MetricReader for PeriodicReader<E> {
         inner.is_shutdown = true;
 
         shutdown_result
+    }
+
+    fn force_flush_async(
+        &self,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = OTelSdkResult> + Send + '_>> {
+        Box::pin(async move {
+            let receiver = {
+                let mut inner = self
+                    .inner
+                    .lock()
+                    .map_err(|e| OTelSdkError::InternalFailure(e.to_string()))?;
+                if inner.is_shutdown {
+                    return Err(OTelSdkError::AlreadyShutdown);
+                }
+                let (sender, receiver) = oneshot::channel();
+                inner
+                    .message_sender
+                    .try_send(Message::Flush(sender))
+                    .map_err(|e| OTelSdkError::InternalFailure(e.to_string()))?;
+                receiver
+            }; // inner dropped here before await
+
+            receiver
+                .await
+                .map_err(|err| OTelSdkError::InternalFailure(err.to_string()))
+                .and_then(|res| res)
+        })
+    }
+
+    fn shutdown_with_timeout_async(
+        &self,
+        _timeout: Duration,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = OTelSdkResult> + Send + '_>> {
+        Box::pin(async move {
+            let receiver = {
+                let mut inner = self
+                    .inner
+                    .lock()
+                    .map_err(|e| OTelSdkError::InternalFailure(e.to_string()))?;
+                if inner.is_shutdown {
+                    return Err(OTelSdkError::AlreadyShutdown);
+                }
+
+                let (sender, receiver) = oneshot::channel();
+                inner
+                    .message_sender
+                    .try_send(Message::Shutdown(sender))
+                    .map_err(|e| OTelSdkError::InternalFailure(e.to_string()))?;
+                receiver
+            }; // inner dropped here before await
+
+            let shutdown_result = receiver
+                .await
+                .map_err(|err| OTelSdkError::InternalFailure(err.to_string()))?;
+
+            // Acquire the lock again to set the shutdown flag
+            let mut inner = self
+                .inner
+                .lock()
+                .map_err(|e| OTelSdkError::InternalFailure(e.to_string()))?;
+            inner.is_shutdown = true;
+
+            shutdown_result
+        })
     }
 
     /// To construct a [MetricReader][metric-reader] when setting up an SDK,

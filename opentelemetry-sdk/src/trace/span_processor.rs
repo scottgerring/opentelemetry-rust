@@ -95,6 +95,37 @@ pub trait SpanProcessor: Send + Sync + std::fmt::Debug {
     fn shutdown(&self) -> OTelSdkResult {
         self.shutdown_with_timeout(Duration::from_secs(5))
     }
+
+    /// Asynchronously force the spans lying in the cache to be exported.
+    ///
+    /// This is the async version of [`force_flush`](SpanProcessor::force_flush).
+    /// The default implementation wraps the sync version. Processors that operate
+    /// in async contexts should override this method.
+    fn force_flush_async(
+        &self,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = OTelSdkResult> + Send + '_>> {
+        Box::pin(std::future::ready(self.force_flush()))
+    }
+
+    /// Asynchronously shuts down the processor with the given timeout.
+    ///
+    /// This is the async version of [`shutdown_with_timeout`](SpanProcessor::shutdown_with_timeout).
+    /// The default implementation wraps the sync version. Processors that operate
+    /// in async contexts should override this method.
+    fn shutdown_with_timeout_async(
+        &self,
+        timeout: Duration,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = OTelSdkResult> + Send + '_>> {
+        Box::pin(std::future::ready(self.shutdown_with_timeout(timeout)))
+    }
+
+    /// Asynchronously shuts down the processor with a default timeout.
+    fn shutdown_async(
+        &self,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = OTelSdkResult> + Send + '_>> {
+        self.shutdown_with_timeout_async(Duration::from_secs(5))
+    }
+
     /// Set the resource for the span processor.
     fn set_resource(&mut self, _resource: &Resource) {}
 }

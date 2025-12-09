@@ -77,6 +77,17 @@ impl<R: RuntimeChannel> LogProcessor for BatchLogProcessor<R> {
     }
 
     fn force_flush(&self) -> OTelSdkResult {
+        // Detect if we're inside a tokio runtime. Calling sync methods from within
+        // an async runtime will deadlock on single-threaded runtimes.
+        #[cfg(feature = "rt-tokio")]
+        if tokio::runtime::Handle::try_current().is_ok() {
+            return Err(OTelSdkError::InternalFailure(
+                "Cannot call force_flush() from within an async runtime. \
+                 Use force_flush_async().await instead to avoid deadlocks."
+                    .into(),
+            ));
+        }
+
         let (res_sender, res_receiver) = oneshot::channel();
         self.message_sender
             .try_send(BatchMessage::Flush(Some(res_sender)))
@@ -88,6 +99,17 @@ impl<R: RuntimeChannel> LogProcessor for BatchLogProcessor<R> {
     }
 
     fn shutdown_with_timeout(&self, _timeout: Duration) -> OTelSdkResult {
+        // Detect if we're inside a tokio runtime. Calling sync methods from within
+        // an async runtime will deadlock on single-threaded runtimes.
+        #[cfg(feature = "rt-tokio")]
+        if tokio::runtime::Handle::try_current().is_ok() {
+            return Err(OTelSdkError::InternalFailure(
+                "Cannot call shutdown() from within an async runtime. \
+                 Use shutdown_async().await instead to avoid deadlocks."
+                    .into(),
+            ));
+        }
+
         let dropped_logs = self.dropped_logs_count.load(Ordering::Relaxed);
         let max_queue_size = self.max_queue_size;
         if dropped_logs > 0 {
@@ -106,6 +128,60 @@ impl<R: RuntimeChannel> LogProcessor for BatchLogProcessor<R> {
         futures_executor::block_on(res_receiver)
             .map_err(|err| OTelSdkError::InternalFailure(format!("{err:?}")))
             .and_then(std::convert::identity)
+    }
+
+    fn force_flush_async(
+        &self,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = OTelSdkResult> + Send + '_>> {
+        let (res_sender, res_receiver) = oneshot::channel();
+        if let Err(err) = self
+            .message_sender
+            .try_send(BatchMessage::Flush(Some(res_sender)))
+        {
+            return Box::pin(std::future::ready(Err(OTelSdkError::InternalFailure(
+                format!("{err:?}"),
+            ))));
+        }
+
+        Box::pin(async move {
+            res_receiver
+                .await
+                .map_err(|err| OTelSdkError::InternalFailure(format!("{err:?}")))
+                .and_then(std::convert::identity)
+        })
+    }
+
+    fn shutdown_with_timeout_async(
+        &self,
+        _timeout: Duration,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = OTelSdkResult> + Send + '_>> {
+        let dropped_logs = self.dropped_logs_count.load(Ordering::Relaxed);
+        let max_queue_size = self.max_queue_size;
+        if dropped_logs > 0 {
+            otel_warn!(
+                name: "BatchLogProcessor.LogsDropped",
+                dropped_logs_count = dropped_logs,
+                max_queue_size = max_queue_size,
+                message = "Logs were dropped due to a queue being full or other error. The count represents the total count of log records dropped in the lifetime of this BatchLogProcessor. Consider increasing the queue size and/or decrease delay between intervals."
+            );
+        }
+
+        let (res_sender, res_receiver) = oneshot::channel();
+        if let Err(err) = self
+            .message_sender
+            .try_send(BatchMessage::Shutdown(res_sender))
+        {
+            return Box::pin(std::future::ready(Err(OTelSdkError::InternalFailure(
+                format!("{err:?}"),
+            ))));
+        }
+
+        Box::pin(async move {
+            res_receiver
+                .await
+                .map_err(|err| OTelSdkError::InternalFailure(format!("{err:?}")))
+                .and_then(std::convert::identity)
+        })
     }
 
     fn set_resource(&mut self, resource: &Resource) {
@@ -521,10 +597,10 @@ mod tests {
             )
             .build();
 
-        provider.force_flush().unwrap();
+        provider.force_flush_async().await.unwrap();
 
         assert_eq!(exporter.get_resource().unwrap().into_iter().count(), 5);
-        let _ = provider.shutdown();
+        let _ = provider.shutdown_async().await;
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -541,8 +617,8 @@ mod tests {
         let instrumentation = InstrumentationScope::default();
 
         processor.emit(&mut record, &instrumentation);
-        processor.force_flush().unwrap();
-        processor.shutdown().unwrap();
+        processor.force_flush_async().await.unwrap();
+        processor.shutdown_async().await.unwrap();
         // todo: expect to see errors here. How should we assert this?
         processor.emit(&mut record, &instrumentation);
         assert_eq!(1, exporter.get_emitted_logs().unwrap().len())
@@ -557,7 +633,7 @@ mod tests {
             runtime::TokioCurrentThread,
         );
 
-        processor.shutdown().unwrap();
+        processor.shutdown_async().await.unwrap();
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -574,7 +650,7 @@ mod tests {
         //
         // deadlock happens in shutdown with tokio current_thread runtime
         //
-        processor.shutdown().unwrap();
+        processor.shutdown_async().await.unwrap();
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -585,7 +661,7 @@ mod tests {
             BatchConfig::default(),
             runtime::TokioCurrentThread,
         );
-        processor.shutdown().unwrap();
+        processor.shutdown_async().await.unwrap();
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -593,7 +669,7 @@ mod tests {
         let exporter = InMemoryLogExporterBuilder::default().build();
         let processor =
             BatchLogProcessor::new(exporter.clone(), BatchConfig::default(), runtime::Tokio);
-        processor.shutdown().unwrap();
+        processor.shutdown_async().await.unwrap();
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -601,7 +677,7 @@ mod tests {
         let exporter = InMemoryLogExporterBuilder::default().build();
         let processor =
             BatchLogProcessor::new(exporter.clone(), BatchConfig::default(), runtime::Tokio);
-        processor.shutdown().unwrap();
+        processor.shutdown_async().await.unwrap();
     }
 
     #[derive(Debug)]
@@ -783,9 +859,9 @@ mod tests {
                 KeyValue::new("k5", "v5"),
             ]))
             .build();
-        provider.force_flush().unwrap();
+        provider.force_flush_async().await.unwrap();
         assert_eq!(exporter.get_resource().unwrap().into_iter().count(), 5);
-        let _ = provider.shutdown();
+        let _ = provider.shutdown_async().await;
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -803,8 +879,8 @@ mod tests {
         let instrumentation = InstrumentationScope::default();
 
         processor.emit(&mut record, &instrumentation);
-        processor.force_flush().unwrap();
-        processor.shutdown().unwrap();
+        processor.force_flush_async().await.unwrap();
+        processor.shutdown_async().await.unwrap();
         // todo: expect to see errors here. How should we assert this?
         processor.emit(&mut record, &instrumentation);
         assert_eq!(1, exporter.get_emitted_logs().unwrap().len())
@@ -820,7 +896,7 @@ mod tests {
         //
         // deadlock happens in shutdown with tokio current_thread runtime
         //
-        processor.shutdown().unwrap();
+        processor.shutdown_async().await.unwrap();
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -833,7 +909,7 @@ mod tests {
             runtime::TokioCurrentThread,
         );
 
-        processor.shutdown().unwrap();
+        processor.shutdown_async().await.unwrap();
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -842,7 +918,7 @@ mod tests {
         let processor =
             BatchLogProcessor::new(exporter.clone(), BatchConfig::default(), runtime::Tokio);
 
-        processor.shutdown().unwrap();
+        processor.shutdown_async().await.unwrap();
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -854,6 +930,6 @@ mod tests {
             runtime::TokioCurrentThread,
         );
 
-        processor.shutdown().unwrap();
+        processor.shutdown_async().await.unwrap();
     }
 }

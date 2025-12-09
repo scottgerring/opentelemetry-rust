@@ -35,6 +35,34 @@ pub trait PushMetricExporter: Send + Sync + 'static {
         self.shutdown_with_timeout(Duration::from_secs(5))
     }
 
+    /// Asynchronously flushes any metric data held by an exporter.
+    ///
+    /// This is the async version of [`force_flush`](PushMetricExporter::force_flush).
+    /// The default implementation wraps the sync version.
+    fn force_flush_async(
+        &self,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = OTelSdkResult> + Send + '_>> {
+        Box::pin(std::future::ready(self.force_flush()))
+    }
+
+    /// Asynchronously releases any held computational resources.
+    ///
+    /// This is the async version of [`shutdown_with_timeout`](PushMetricExporter::shutdown_with_timeout).
+    /// The default implementation wraps the sync version.
+    fn shutdown_with_timeout_async(
+        &self,
+        timeout: Duration,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = OTelSdkResult> + Send + '_>> {
+        Box::pin(std::future::ready(self.shutdown_with_timeout(timeout)))
+    }
+
+    /// Asynchronously shuts down the exporter with a default timeout.
+    fn shutdown_async(
+        &self,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = OTelSdkResult> + Send + '_>> {
+        self.shutdown_with_timeout_async(Duration::from_secs(5))
+    }
+
     /// Access the [Temporality] of the MetricExporter.
     fn temporality(&self) -> Temporality;
 }
