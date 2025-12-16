@@ -198,6 +198,34 @@ impl<T: Send> TrySend for tokio::sync::mpsc::Sender<T> {
     }
 }
 
+/// A wrapper around `futures_channel::mpsc::Sender` that provides interior mutability
+/// to satisfy the `TrySend` trait's `&self` requirement.
+///
+/// This is needed because `futures_channel::mpsc::Sender::try_send` requires `&mut self`,
+/// while our `TrySend` trait requires `&self` (and `Sync`).
+#[cfg(feature = "experimental_async_runtime")]
+#[derive(Debug)]
+pub struct FuturesChannelSender<T>(std::sync::Mutex<futures_channel::mpsc::Sender<T>>);
+
+#[cfg(feature = "experimental_async_runtime")]
+impl<T: Send> TrySend for FuturesChannelSender<T> {
+    type Message = T;
+
+    fn try_send(&self, item: Self::Message) -> Result<(), TrySendError> {
+        self.0
+            .lock()
+            .map_err(|_| TrySendError::ChannelClosed)?
+            .try_send(item)
+            .map_err(|err| {
+                if err.is_full() {
+                    TrySendError::ChannelFull
+                } else {
+                    TrySendError::ChannelClosed
+                }
+            })
+    }
+}
+
 #[cfg(all(feature = "experimental_async_runtime", feature = "rt-tokio"))]
 #[cfg_attr(
     docsrs,
@@ -271,5 +299,19 @@ impl Runtime for NoAsync {
         async move {
             std::thread::sleep(duration);
         }
+    }
+}
+
+#[cfg(feature = "experimental_async_runtime")]
+impl RuntimeChannel for NoAsync {
+    type Receiver<T: Debug + Send> = futures_channel::mpsc::Receiver<T>;
+    type Sender<T: Debug + Send> = FuturesChannelSender<T>;
+
+    fn batch_message_channel<T: Debug + Send>(
+        &self,
+        capacity: usize,
+    ) -> (Self::Sender<T>, Self::Receiver<T>) {
+        let (sender, receiver) = futures_channel::mpsc::channel(capacity);
+        (FuturesChannelSender(std::sync::Mutex::new(sender)), receiver)
     }
 }

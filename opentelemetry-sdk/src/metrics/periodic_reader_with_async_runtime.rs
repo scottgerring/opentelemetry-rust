@@ -505,6 +505,11 @@ mod tests {
         );
     }
 
+    #[test]
+    fn collection_triggered_by_interval_no_async_runtime() {
+        collection_triggered_by_interval_helper(runtime::NoAsync);
+    }
+
     fn collection_triggered_by_interval_helper<RT>(runtime: RT)
     where
         RT: crate::runtime::RuntimeChannel,
