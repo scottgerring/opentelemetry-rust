@@ -52,10 +52,7 @@ pub(crate) mod manual_reader;
 pub(crate) mod meter;
 mod meter_provider;
 pub(crate) mod noop;
-pub(crate) mod periodic_reader;
-#[cfg(feature = "experimental_metrics_periodicreader_with_async_runtime")]
-/// Module for periodic reader with async runtime.
-pub mod periodic_reader_with_async_runtime;
+mod periodic_reader;
 pub(crate) mod pipeline;
 #[cfg(feature = "experimental_metrics_custom_reader")]
 pub mod reader;
@@ -117,6 +114,7 @@ mod tests {
     use crate::metrics::internal::AggregatedMetricsAccess;
     use crate::metrics::InMemoryMetricExporter;
     use crate::metrics::InMemoryMetricExporterBuilder;
+    use crate::runtime;
     use data::GaugeDataPoint;
     use opentelemetry::metrics::{Counter, Meter, UpDownCounter};
     use opentelemetry::InstrumentationScope;
@@ -1641,8 +1639,13 @@ mod tests {
 
         // Arrange
         let exporter = InMemoryMetricExporter::default();
+        // Use Tokio runtime with block_on since these are sync tests but need
+        // proper async handling for the PeriodicReader
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _guard = rt.enter();
+        let reader = PeriodicReader::builder_with_runtime(exporter.clone(), runtime::Tokio).build();
         let meter_provider = SdkMeterProvider::builder()
-            .with_periodic_exporter(exporter.clone())
+            .with_reader(reader)
             .with_view(view_function)
             .build();
 
@@ -1711,8 +1714,11 @@ mod tests {
 
         // Arrange
         let exporter = InMemoryMetricExporter::default();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _guard = rt.enter();
+        let reader = PeriodicReader::builder_with_runtime(exporter.clone(), runtime::Tokio).build();
         let meter_provider = SdkMeterProvider::builder()
-            .with_periodic_exporter(exporter.clone())
+            .with_reader(reader)
             .with_view(view1)
             .with_view(view2)
             .build();
@@ -1754,8 +1760,11 @@ mod tests {
 
         // Arrange
         let exporter = InMemoryMetricExporter::default();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _guard = rt.enter();
+        let reader = PeriodicReader::builder_with_runtime(exporter.clone(), runtime::Tokio).build();
         let meter_provider = SdkMeterProvider::builder()
-            .with_periodic_exporter(exporter.clone())
+            .with_reader(reader)
             .with_view(view)
             .build();
 
@@ -3197,9 +3206,10 @@ mod tests {
         fn new(temporality: Temporality) -> Self {
             let exporter = InMemoryMetricExporterBuilder::new().with_temporality(temporality);
             let exporter = exporter.build();
-            let meter_provider = SdkMeterProvider::builder()
-                .with_periodic_exporter(exporter.clone())
-                .build();
+            // Use Tokio runtime since tests run under #[tokio::test]
+            let reader =
+                PeriodicReader::builder_with_runtime(exporter.clone(), runtime::Tokio).build();
+            let meter_provider = SdkMeterProvider::builder().with_reader(reader).build();
 
             TestContext {
                 exporter,
@@ -3214,8 +3224,11 @@ mod tests {
         {
             let exporter = InMemoryMetricExporterBuilder::new().with_temporality(temporality);
             let exporter = exporter.build();
+            // Use Tokio runtime since tests run under #[tokio::test]
+            let reader =
+                PeriodicReader::builder_with_runtime(exporter.clone(), runtime::Tokio).build();
             let meter_provider = SdkMeterProvider::builder()
-                .with_periodic_exporter(exporter.clone())
+                .with_reader(reader)
                 .with_view(view)
                 .build();
 

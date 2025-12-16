@@ -85,10 +85,9 @@
 //! * `jaeger_remote_sampler`: Enables the [Jaeger remote sampler](https://www.jaegertracing.io/docs/1.53/sampling/).
 //!
 //!
-//! Support for recording and exporting telemetry asynchronously and perform
-//! metrics aggregation can be added via the following flags:
+//! Support for recording and exporting telemetry asynchronously can be added via
+//! the following flags:
 //!
-//! * `experimental_async_runtime`: Enables the experimental `Runtime` trait and related functionality.
 //! * `rt-tokio`: Spawn telemetry tasks using [tokio]'s multi-thread runtime.
 //! * `rt-tokio-current-thread`: Spawn telemetry tasks on a separate runtime so that the main runtime won't be blocked.
 //!
@@ -125,7 +124,6 @@ pub mod metrics;
 #[cfg_attr(docsrs, doc(cfg(feature = "trace")))]
 pub mod propagation;
 pub mod resource;
-#[cfg(feature = "experimental_async_runtime")]
 pub mod runtime;
 #[cfg(any(feature = "testing", test))]
 #[cfg_attr(docsrs, doc(cfg(any(feature = "testing", test))))]

@@ -19,7 +19,6 @@ use thiserror::Error;
 /// OpenTelemetry expects a *multithreaded* runtime because its types can move across threads.
 /// For this reason, this trait requires the `Send` and `Sync` bounds. Single-threaded runtimes
 /// can implement this trait in a way that spawns the tasks on the same thread as the calling code.
-#[cfg(feature = "experimental_async_runtime")]
 pub trait Runtime: Clone + Send + Sync + 'static {
     /// Spawn a new task or thread, which executes the given future.
     ///
@@ -41,8 +40,6 @@ pub trait Runtime: Clone + Send + Sync + 'static {
 }
 
 /// Uses the given runtime to produce an interval stream.
-#[cfg(feature = "experimental_async_runtime")]
-#[allow(dead_code)]
 pub(crate) fn to_interval_stream<T: Runtime>(
     runtime: T,
     interval: Duration,
@@ -58,19 +55,13 @@ pub(crate) fn to_interval_stream<T: Runtime>(
 }
 
 /// Runtime implementation, which works with Tokio's multi thread runtime.
-#[cfg(all(feature = "experimental_async_runtime", feature = "rt-tokio"))]
-#[cfg_attr(
-    docsrs,
-    doc(cfg(all(feature = "experimental_async_runtime", feature = "rt-tokio")))
-)]
+#[cfg(feature = "rt-tokio")]
+#[cfg_attr(docsrs, doc(cfg(feature = "rt-tokio")))]
 #[derive(Debug, Clone)]
 pub struct Tokio;
 
-#[cfg(all(feature = "experimental_async_runtime", feature = "rt-tokio"))]
-#[cfg_attr(
-    docsrs,
-    doc(cfg(all(feature = "experimental_async_runtime", feature = "rt-tokio")))
-)]
+#[cfg(feature = "rt-tokio")]
+#[cfg_attr(docsrs, doc(cfg(feature = "rt-tokio")))]
 impl Runtime for Tokio {
     fn spawn<F>(&self, future: F)
     where
@@ -87,31 +78,13 @@ impl Runtime for Tokio {
 }
 
 /// Runtime implementation, which works with Tokio's current thread runtime.
-#[cfg(all(
-    feature = "experimental_async_runtime",
-    feature = "rt-tokio-current-thread"
-))]
-#[cfg_attr(
-    docsrs,
-    doc(cfg(all(
-        feature = "experimental_async_runtime",
-        feature = "rt-tokio-current-thread"
-    )))
-)]
+#[cfg(feature = "rt-tokio-current-thread")]
+#[cfg_attr(docsrs, doc(cfg(feature = "rt-tokio-current-thread")))]
 #[derive(Debug, Clone)]
 pub struct TokioCurrentThread;
 
-#[cfg(all(
-    feature = "experimental_async_runtime",
-    feature = "rt-tokio-current-thread"
-))]
-#[cfg_attr(
-    docsrs,
-    doc(cfg(all(
-        feature = "experimental_async_runtime",
-        feature = "rt-tokio-current-thread"
-    )))
-)]
+#[cfg(feature = "rt-tokio-current-thread")]
+#[cfg_attr(docsrs, doc(cfg(feature = "rt-tokio-current-thread")))]
 impl Runtime for TokioCurrentThread {
     fn spawn<F>(&self, future: F)
     where
@@ -142,7 +115,6 @@ impl Runtime for TokioCurrentThread {
 ///
 /// [log]: crate::logs::BatchLogProcessor
 /// [span]: crate::trace::BatchSpanProcessor
-#[cfg(feature = "experimental_async_runtime")]
 pub trait RuntimeChannel: Runtime {
     /// A future stream to receive batch messages from channels.
     type Receiver<T: Debug + Send>: Stream<Item = T> + Send;
@@ -157,7 +129,6 @@ pub trait RuntimeChannel: Runtime {
 }
 
 /// Error returned by a [`TrySend`] implementation.
-#[cfg(feature = "experimental_async_runtime")]
 #[derive(Debug, Error)]
 pub enum TrySendError {
     /// Send failed due to the channel being full.
@@ -172,7 +143,6 @@ pub enum TrySendError {
 }
 
 /// TrySend is an abstraction of `Sender` that is capable of sending messages through a reference.
-#[cfg(feature = "experimental_async_runtime")]
 pub trait TrySend: Sync + Send {
     /// The message that will be sent.
     type Message;
@@ -183,10 +153,7 @@ pub trait TrySend: Sync + Send {
     fn try_send(&self, item: Self::Message) -> Result<(), TrySendError>;
 }
 
-#[cfg(all(
-    feature = "experimental_async_runtime",
-    any(feature = "rt-tokio", feature = "rt-tokio-current-thread")
-))]
+#[cfg(any(feature = "rt-tokio", feature = "rt-tokio-current-thread"))]
 impl<T: Send> TrySend for tokio::sync::mpsc::Sender<T> {
     type Message = T;
 
@@ -203,11 +170,9 @@ impl<T: Send> TrySend for tokio::sync::mpsc::Sender<T> {
 ///
 /// This is needed because `futures_channel::mpsc::Sender::try_send` requires `&mut self`,
 /// while our `TrySend` trait requires `&self` (and `Sync`).
-#[cfg(feature = "experimental_async_runtime")]
 #[derive(Debug)]
 pub struct FuturesChannelSender<T>(std::sync::Mutex<futures_channel::mpsc::Sender<T>>);
 
-#[cfg(feature = "experimental_async_runtime")]
 impl<T: Send> TrySend for FuturesChannelSender<T> {
     type Message = T;
 
@@ -226,11 +191,8 @@ impl<T: Send> TrySend for FuturesChannelSender<T> {
     }
 }
 
-#[cfg(all(feature = "experimental_async_runtime", feature = "rt-tokio"))]
-#[cfg_attr(
-    docsrs,
-    doc(cfg(all(feature = "experimental_async_runtime", feature = "rt-tokio")))
-)]
+#[cfg(feature = "rt-tokio")]
+#[cfg_attr(docsrs, doc(cfg(feature = "rt-tokio")))]
 impl RuntimeChannel for Tokio {
     type Receiver<T: Debug + Send> = tokio_stream::wrappers::ReceiverStream<T>;
     type Sender<T: Debug + Send> = tokio::sync::mpsc::Sender<T>;
@@ -247,17 +209,8 @@ impl RuntimeChannel for Tokio {
     }
 }
 
-#[cfg(all(
-    feature = "experimental_async_runtime",
-    feature = "rt-tokio-current-thread"
-))]
-#[cfg_attr(
-    docsrs,
-    doc(cfg(all(
-        feature = "experimental_async_runtime",
-        feature = "rt-tokio-current-thread"
-    )))
-)]
+#[cfg(feature = "rt-tokio-current-thread")]
+#[cfg_attr(docsrs, doc(cfg(feature = "rt-tokio-current-thread")))]
 impl RuntimeChannel for TokioCurrentThread {
     type Receiver<T: Debug + Send> = tokio_stream::wrappers::ReceiverStream<T>;
     type Sender<T: Debug + Send> = tokio::sync::mpsc::Sender<T>;
@@ -278,11 +231,9 @@ impl RuntimeChannel for TokioCurrentThread {
 ///
 /// This runtime can be used when executing in a non-async environment.
 /// The runtime methods will perform their operations synchronously.
-#[cfg(feature = "experimental_async_runtime")]
 #[derive(Debug, Clone, Copy)]
 pub struct NoAsync;
 
-#[cfg(feature = "experimental_async_runtime")]
 impl Runtime for NoAsync {
     fn spawn<F>(&self, future: F)
     where
@@ -302,7 +253,6 @@ impl Runtime for NoAsync {
     }
 }
 
-#[cfg(feature = "experimental_async_runtime")]
 impl RuntimeChannel for NoAsync {
     type Receiver<T: Debug + Send> = futures_channel::mpsc::Receiver<T>;
     type Sender<T: Debug + Send> = FuturesChannelSender<T>;
@@ -312,6 +262,9 @@ impl RuntimeChannel for NoAsync {
         capacity: usize,
     ) -> (Self::Sender<T>, Self::Receiver<T>) {
         let (sender, receiver) = futures_channel::mpsc::channel(capacity);
-        (FuturesChannelSender(std::sync::Mutex::new(sender)), receiver)
+        (
+            FuturesChannelSender(std::sync::Mutex::new(sender)),
+            receiver,
+        )
     }
 }

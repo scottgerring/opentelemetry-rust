@@ -177,7 +177,7 @@ where
     }
 }
 
-/// No-op retry function for when experimental_async_runtime is not enabled.
+/// No-op retry function for when retry features are not enabled.
 /// This function will execute the operation exactly once without any retries.
 #[cfg(not(any(
     feature = "experimental-grpc-retry",
@@ -194,7 +194,7 @@ where
     F: FnMut() -> Fut,
     Fut: std::future::Future<Output = Result<T, E>>,
 {
-    // Without experimental_async_runtime, we just execute once without retries
+    // Without retry features, we just execute once without retries
     operation().await
 }
 

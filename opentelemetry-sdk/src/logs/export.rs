@@ -18,17 +18,7 @@ use std::time;
 ///
 #[derive(Debug)]
 pub struct LogBatch<'a> {
-    data: LogBatchData<'a>,
-}
-
-/// The `LogBatchData` enum represents the data field of a `LogBatch`.
-/// It can either be:
-/// - A shared reference to a slice of boxed tuples, where each tuple consists of an owned `LogRecord` and an owned `InstrumentationScope`.
-/// - Or it can be a shared reference to a slice of tuples, where each tuple consists of a reference to a `LogRecord` and a reference to an `InstrumentationScope`.
-#[derive(Debug)]
-enum LogBatchData<'a> {
-    SliceOfOwnedData(&'a [Box<(SdkLogRecord, InstrumentationScope)>]), // Used by BatchProcessor which clones the LogRecords for its own use.
-    SliceOfBorrowedData(&'a [(&'a SdkLogRecord, &'a InstrumentationScope)]),
+    data: &'a [(&'a SdkLogRecord, &'a InstrumentationScope)],
 }
 
 impl<'a> LogBatch<'a> {
@@ -47,21 +37,11 @@ impl<'a> LogBatch<'a> {
     /// Note - this is not a public function, and should not be used directly. This would be
     /// made private in the future.
     pub fn new(data: &'a [(&'a SdkLogRecord, &'a InstrumentationScope)]) -> LogBatch<'a> {
-        LogBatch {
-            data: LogBatchData::SliceOfBorrowedData(data),
-        }
-    }
-
-    pub(crate) fn new_with_owned_data(
-        data: &'a [Box<(SdkLogRecord, InstrumentationScope)>],
-    ) -> LogBatch<'a> {
-        LogBatch {
-            data: LogBatchData::SliceOfOwnedData(data),
-        }
+        LogBatch { data }
     }
 }
 
-impl LogBatch<'_> {
+impl<'a> LogBatch<'a> {
     /// Returns an iterator over the log records and instrumentation scopes in the batch.
     ///
     /// Each item yielded by the iterator is a tuple containing references to a `LogRecord`
@@ -71,43 +51,10 @@ impl LogBatch<'_> {
     ///
     /// An iterator that yields references to the `LogRecord` and `InstrumentationScope` in the batch.
     ///
-    pub fn iter(&self) -> impl Iterator<Item = (&SdkLogRecord, &InstrumentationScope)> {
-        LogBatchDataIter {
-            data: &self.data,
-            index: 0,
-        }
-    }
-}
-
-struct LogBatchDataIter<'a> {
-    data: &'a LogBatchData<'a>,
-    index: usize,
-}
-
-impl<'a> Iterator for LogBatchDataIter<'a> {
-    type Item = (&'a SdkLogRecord, &'a InstrumentationScope);
-
-    fn next(&mut self) -> Option<Self::Item> {
-        match self.data {
-            LogBatchData::SliceOfOwnedData(data) => {
-                if self.index < data.len() {
-                    let record = &*data[self.index];
-                    self.index += 1;
-                    Some((&record.0, &record.1))
-                } else {
-                    None
-                }
-            }
-            LogBatchData::SliceOfBorrowedData(data) => {
-                if self.index < data.len() {
-                    let record = &data[self.index];
-                    self.index += 1;
-                    Some((record.0, record.1))
-                } else {
-                    None
-                }
-            }
-        }
+    pub fn iter(
+        &self,
+    ) -> impl Iterator<Item = (&'a SdkLogRecord, &'a InstrumentationScope)> + use<'a> {
+        self.data.iter().map(|(record, scope)| (*record, *scope))
     }
 }
 

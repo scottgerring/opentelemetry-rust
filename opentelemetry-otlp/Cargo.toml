@@ -75,7 +75,7 @@ gzip-tonic = ["tonic/gzip"]
 zstd-tonic = ["tonic/zstd"]
 
 # grpc with retry support
-experimental-grpc-retry = ["grpc-tonic", "opentelemetry_sdk/experimental_async_runtime", "opentelemetry_sdk/rt-tokio"]
+experimental-grpc-retry = ["grpc-tonic", "opentelemetry_sdk/rt-tokio"]
 
 # http compression
 gzip-http = ["flate2"]
@@ -88,7 +88,7 @@ tls-webpki-roots = ["tls", "tonic/tls-webpki-roots"]
 http-proto = ["prost", "opentelemetry-http", "opentelemetry-proto/gen-tonic-messages", "http", "trace", "metrics"]
 
 # http with retry support.
-experimental-http-retry = ["opentelemetry_sdk/experimental_async_runtime", "opentelemetry_sdk/rt-tokio", "tokio", "httpdate"]
+experimental-http-retry = ["opentelemetry_sdk/rt-tokio", "tokio", "httpdate"]
 
 http-json = ["serde_json", "prost", "opentelemetry-http", "opentelemetry-proto/gen-tonic-messages", "opentelemetry-proto/with-serde", "http", "trace", "metrics"]
 reqwest-blocking-client = ["reqwest/blocking", "opentelemetry-http/reqwest-blocking"]
