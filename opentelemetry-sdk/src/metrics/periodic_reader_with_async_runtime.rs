@@ -4,7 +4,7 @@ use std::{
     time::Duration,
 };
 
-use futures_channel::{mpsc, oneshot};
+use futures_channel::oneshot;
 use futures_util::{
     future::{self, Either},
     pin_mut,
@@ -13,7 +13,7 @@ use futures_util::{
 };
 use opentelemetry::{otel_debug, otel_error};
 
-use crate::runtime::{to_interval_stream, Runtime};
+use crate::runtime::{to_interval_stream, RuntimeChannel, TrySend};
 use crate::{
     error::{OTelSdkError, OTelSdkResult},
     metrics::{exporter::PushMetricExporter, reader::SdkProducer},
@@ -55,7 +55,7 @@ pub struct PeriodicReaderBuilder<E, RT> {
 impl<E, RT> PeriodicReaderBuilder<E, RT>
 where
     E: PushMetricExporter,
-    RT: Runtime,
+    RT: RuntimeChannel,
 {
     fn new(exporter: E, runtime: RT) -> Self {
         let interval = env::var(METRIC_EXPORT_INTERVAL_NAME)
@@ -105,10 +105,10 @@ where
     }
 
     /// Create a [PeriodicReader] with the given config.
-    pub fn build(self) -> PeriodicReader<E> {
-        let (message_sender, message_receiver) = mpsc::channel(256);
+    pub fn build(self) -> PeriodicReader<E, RT> {
+        let (message_sender, message_receiver) = self.runtime.batch_message_channel(256);
 
-        let worker = move |reader: &PeriodicReader<E>| {
+        let worker = move |reader: &PeriodicReader<E, RT>| {
             let runtime = self.runtime.clone();
             let reader = reader.clone();
             self.runtime.spawn(async move {
@@ -175,7 +175,7 @@ where
 /// # fn example<E, R>(get_exporter: impl Fn() -> E, get_runtime: impl Fn() -> R)
 /// # where
 /// #     E: opentelemetry_sdk::metrics::exporter::PushMetricExporter,
-/// #     R: opentelemetry_sdk::runtime::Runtime,
+/// #     R: opentelemetry_sdk::runtime::RuntimeChannel,
 /// # {
 ///
 /// let exporter = get_exporter(); // set up a push exporter like OTLP
@@ -185,12 +185,12 @@ where
 /// # drop(reader);
 /// # }
 /// ```
-pub struct PeriodicReader<E: PushMetricExporter> {
+pub struct PeriodicReader<E: PushMetricExporter, R: RuntimeChannel> {
     exporter: Arc<E>,
-    inner: Arc<Mutex<PeriodicReaderInner<E>>>,
+    inner: Arc<Mutex<PeriodicReaderInner<E, R>>>,
 }
 
-impl<E: PushMetricExporter> Clone for PeriodicReader<E> {
+impl<E: PushMetricExporter, R: RuntimeChannel> Clone for PeriodicReader<E, R> {
     fn clone(&self) -> Self {
         Self {
             exporter: Arc::clone(&self.exporter),
@@ -199,26 +199,23 @@ impl<E: PushMetricExporter> Clone for PeriodicReader<E> {
     }
 }
 
-impl<E: PushMetricExporter> PeriodicReader<E> {
+impl<E: PushMetricExporter, R: RuntimeChannel> PeriodicReader<E, R> {
     /// Configuration options for a periodic reader
-    pub fn builder<RT>(exporter: E, runtime: RT) -> PeriodicReaderBuilder<E, RT>
-    where
-        RT: Runtime,
-    {
+    pub fn builder(exporter: E, runtime: R) -> PeriodicReaderBuilder<E, R> {
         PeriodicReaderBuilder::new(exporter, runtime)
     }
 }
 
-impl<E: PushMetricExporter> fmt::Debug for PeriodicReader<E> {
+impl<E: PushMetricExporter, R: RuntimeChannel> fmt::Debug for PeriodicReader<E, R> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("PeriodicReader").finish()
     }
 }
 
-struct PeriodicReaderInner<E: PushMetricExporter> {
-    message_sender: mpsc::Sender<Message>,
+struct PeriodicReaderInner<E: PushMetricExporter, R: RuntimeChannel> {
+    message_sender: R::Sender<Message>,
     is_shutdown: bool,
-    sdk_producer_or_worker: ProducerOrWorker<E>,
+    sdk_producer_or_worker: ProducerOrWorker<E, R>,
 }
 
 #[derive(Debug)]
@@ -228,20 +225,20 @@ enum Message {
     Shutdown(oneshot::Sender<OTelSdkResult>),
 }
 
-enum ProducerOrWorker<E: PushMetricExporter> {
+enum ProducerOrWorker<E: PushMetricExporter, R: RuntimeChannel> {
     Producer(Weak<dyn SdkProducer>),
     #[allow(clippy::type_complexity)]
-    Worker(Box<dyn FnOnce(&PeriodicReader<E>) + Send + Sync>),
+    Worker(Box<dyn FnOnce(&PeriodicReader<E, R>) + Send>),
 }
 
-struct PeriodicReaderWorker<E: PushMetricExporter, RT: Runtime> {
-    reader: PeriodicReader<E>,
+struct PeriodicReaderWorker<E: PushMetricExporter, R: RuntimeChannel> {
+    reader: PeriodicReader<E, R>,
     timeout: Duration,
-    runtime: RT,
+    runtime: R,
     rm: ResourceMetrics,
 }
 
-impl<E: PushMetricExporter, RT: Runtime> PeriodicReaderWorker<E, RT> {
+impl<E: PushMetricExporter, R: RuntimeChannel> PeriodicReaderWorker<E, R> {
     async fn collect_and_export(&mut self) -> OTelSdkResult {
         self.reader
             .collect(&mut self.rm)
@@ -332,7 +329,7 @@ impl<E: PushMetricExporter, RT: Runtime> PeriodicReaderWorker<E, RT> {
     }
 }
 
-impl<E: PushMetricExporter> MetricReader for PeriodicReader<E> {
+impl<E: PushMetricExporter, R: RuntimeChannel> MetricReader for PeriodicReader<E, R> {
     fn register_pipeline(&self, pipeline: Weak<Pipeline>) {
         let mut inner = match self.inner.lock() {
             Ok(guard) => guard,
@@ -378,7 +375,7 @@ impl<E: PushMetricExporter> MetricReader for PeriodicReader<E> {
     }
 
     fn force_flush(&self) -> OTelSdkResult {
-        let mut inner = self
+        let inner = self
             .inner
             .lock()
             .map_err(|e| OTelSdkError::InternalFailure(e.to_string()))?;
@@ -399,7 +396,7 @@ impl<E: PushMetricExporter> MetricReader for PeriodicReader<E> {
     }
 
     fn shutdown_with_timeout(&self, _timeout: Duration) -> OTelSdkResult {
-        let mut inner = self
+        let inner = self
             .inner
             .lock()
             .map_err(|e| OTelSdkError::InternalFailure(e.to_string()))?;
@@ -510,7 +507,7 @@ mod tests {
 
     fn collection_triggered_by_interval_helper<RT>(runtime: RT)
     where
-        RT: crate::runtime::Runtime,
+        RT: crate::runtime::RuntimeChannel,
     {
         let interval = std::time::Duration::from_millis(1);
         let exporter = InMemoryMetricExporter::default();
