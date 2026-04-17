@@ -627,7 +627,6 @@
 #![cfg_attr(test, deny(warnings))]
 
 mod exporter;
-mod transform;
 #[cfg(feature = "logs")]
 #[cfg(any(feature = "http-proto", feature = "http-json", feature = "grpc-tonic"))]
 mod logs;
@@ -637,6 +636,7 @@ mod metric;
 #[cfg(feature = "trace")]
 #[cfg(any(feature = "http-proto", feature = "http-json", feature = "grpc-tonic"))]
 mod span;
+mod transform;
 
 #[cfg(any(feature = "grpc-tonic", feature = "experimental-http-retry"))]
 pub mod retry_classification;
