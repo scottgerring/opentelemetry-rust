@@ -197,20 +197,20 @@ For more information about the maintainer role, see the [community repository](h
 
 ### Approvers
 
-* [Anton Grübel](https://github.com/gruebel), Baz
 * [Björn Antonsson](https://github.com/bantonsson), Datadog
 * [Scott Gerring](https://github.com/scottgerring), Datadog
-* [Shaun Cox](https://github.com/shaun-cox), Microsoft
 
 For more information about the approver role, see the [community repository](https://github.com/open-telemetry/community/blob/main/guides/contributor/membership.md#approver).
 
 ### Emeritus
 
+* [Anton Grübel](https://github.com/gruebel), Approver
 * [Dirkjan Ochtman](https://github.com/djc), Maintainer
 * [Isobel Redelmeier](https://github.com/iredelmeier), Maintainer
 * [Jan Kühle](https://github.com/frigus02), Approver
 * [Julian Tescher](https://github.com/jtescher), Maintainer
 * [Mike Goldsmith](https://github.com/MikeGoldsmith), Approver
+* [Shaun Cox](https://github.com/shaun-cox), Approver
 
 For more information about the emeritus role, see the [community repository](https://github.com/open-telemetry/community/blob/main/guides/contributor/membership.md#emeritus-maintainerapprovertriager).
 
