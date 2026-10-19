@@ -6,7 +6,8 @@ use opentelemetry::{
 use std::borrow::Cow;
 #[cfg(feature = "experimental_span_attributes")]
 use std::collections::HashSet;
-use tracing_core::{Level, Metadata};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use tracing_core::{subscriber::Interest, Level, Metadata};
 #[cfg(feature = "experimental_metadata_attributes")]
 use tracing_log::NormalizeEvent;
 use tracing_subscriber::{registry::LookupSpan, Layer};
@@ -34,6 +35,76 @@ fn is_synthesized_event_name(meta: &Metadata<'_>) -> bool {
         .and_then(|rest| rest.strip_prefix(':'))
         .and_then(|rest| rest.parse::<u32>().ok())
         == Some(line)
+}
+
+const SYNTHETIC_CALLSITE_BUCKETS: usize = 512;
+
+/// An append-only set specialised for static `Metadata` addresses.
+///
+/// Each synthetic callsite is inserted into a small fixed-probe atomic table
+/// during registration. Reads normally need one atomic load. If all candidate
+/// slots collide, the exact name check is used as a correct slow path. There
+/// are no locks, allocations, or unsafe pointer dereferences.
+struct SyntheticCallsiteSet {
+    buckets: [AtomicUsize; SYNTHETIC_CALLSITE_BUCKETS],
+}
+
+impl Default for SyntheticCallsiteSet {
+    fn default() -> Self {
+        Self {
+            buckets: std::array::from_fn(|_| AtomicUsize::new(0)),
+        }
+    }
+}
+
+impl SyntheticCallsiteSet {
+    #[inline(always)]
+    fn key(metadata: &Metadata<'_>) -> usize {
+        metadata as *const Metadata<'_> as usize
+    }
+
+    #[inline(always)]
+    fn first_bucket(key: usize) -> usize {
+        (key >> 4) & (SYNTHETIC_CALLSITE_BUCKETS - 1)
+    }
+
+    #[inline(always)]
+    fn contains(&self, metadata: &Metadata<'_>) -> bool {
+        const PROBES: usize = 4;
+        let key = Self::key(metadata);
+        let first = Self::first_bucket(key);
+        for offset in 0..PROBES {
+            let cached = self.buckets[(first + offset) & (SYNTHETIC_CALLSITE_BUCKETS - 1)]
+                .load(Ordering::Acquire);
+            if cached == key {
+                return true;
+            }
+            if cached == 0 {
+                return false;
+            }
+        }
+
+        // All candidate slots were occupied. Registration may have left this
+        // callsite uncached, so preserve exact behaviour via the slow path.
+        is_synthesized_event_name(metadata)
+    }
+
+    fn insert(&self, metadata: &'static Metadata<'static>) {
+        const PROBES: usize = 4;
+        let key = Self::key(metadata);
+        let first = Self::first_bucket(key);
+        for offset in 0..PROBES {
+            let bucket = &self.buckets[(first + offset) & (SYNTHETIC_CALLSITE_BUCKETS - 1)];
+            match bucket.compare_exchange(0, key, Ordering::Release, Ordering::Relaxed) {
+                Ok(_) => return,
+                Err(existing) if existing == key => return,
+                Err(_) => {}
+            }
+        }
+
+        // A collision needs no storage: `contains` falls back to the exact
+        // check whenever all candidate slots are occupied by other callsites.
+    }
 }
 
 /// Logs from the log crate have duplicated attributes that we removed here.
@@ -379,6 +450,7 @@ where
     L: Logger + Send + Sync,
 {
     logger: L,
+    synthetic_event_callsites: SyntheticCallsiteSet,
     _phantom: std::marker::PhantomData<P>, // P is not used.
     // Tracing-span attribute enrichment configuration:
     // - `None` => disabled (default). No per-span work, no scope walk.
@@ -476,6 +548,7 @@ where
     pub fn build(self) -> OpenTelemetryTracingBridge<P, L> {
         OpenTelemetryTracingBridge {
             logger: self.logger,
+            synthetic_event_callsites: SyntheticCallsiteSet::default(),
             _phantom: self._phantom,
             #[cfg(feature = "experimental_span_attributes")]
             span_attributes: self.span_attributes,
@@ -489,6 +562,13 @@ where
     P: LoggerProvider<Logger = L> + Send + Sync + 'static,
     L: Logger + Send + Sync + 'static,
 {
+    fn register_callsite(&self, metadata: &'static Metadata<'static>) -> Interest {
+        if metadata.is_event() && is_synthesized_event_name(metadata) {
+            self.synthetic_event_callsites.insert(metadata);
+        }
+        Interest::always()
+    }
+
     fn on_event(
         &self,
         event: &tracing::Event<'_>,
@@ -498,7 +578,8 @@ where
         let metadata = event.metadata();
         let severity = severity_of_level(metadata.level());
         let target = metadata.target();
-        let event_name = (!is_synthesized_event_name(metadata)).then(|| metadata.name());
+        let is_synthesized = self.synthetic_event_callsites.contains(metadata);
+        let event_name = (!is_synthesized).then(|| metadata.name());
         if !self.logger.event_enabled(severity, target, event_name) {
             // TODO: See if we need internal logs or track the count.
             return;
@@ -841,6 +922,32 @@ mod tests {
     }
 
     #[test]
+    fn synthetic_event_name_cache_collisions_fall_back_to_exact_check() {
+        let exporter = InMemoryLogExporter::default();
+        let logger_provider = SdkLoggerProvider::builder()
+            .with_simple_exporter(exporter.clone())
+            .build();
+
+        let bridge = layer::OpenTelemetryTracingBridge::new(&logger_provider);
+        for bucket in &bridge.synthetic_event_callsites.buckets {
+            bucket.store(usize::MAX, std::sync::atomic::Ordering::Relaxed);
+        }
+        let subscriber = tracing_subscriber::registry().with(bridge);
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        error!(name: "explicit-event", "explicit");
+        error!("unnamed");
+        assert!(logger_provider.force_flush().is_ok());
+
+        let exported_logs = exporter
+            .get_emitted_logs()
+            .expect("logs are expected to be exported");
+        assert_eq!(exported_logs.len(), 2);
+        assert_eq!(exported_logs[0].record.event_name(), Some("explicit-event"));
+        assert_eq!(exported_logs[1].record.event_name(), None);
+    }
+
+    #[test]
     fn tracing_appender_inside_tracing_context() {
         // Arrange
         let exporter: InMemoryLogExporter = InMemoryLogExporter::default();
@@ -1167,12 +1274,12 @@ mod tests {
     #[derive(Debug)]
     struct LogProcessorWithIsEnabled {
         severity_level: Severity,
-        name: String,
+        name: Option<String>,
         target: String,
     }
 
     impl LogProcessorWithIsEnabled {
-        fn new(severity_level: Severity, name: String, target: String) -> Self {
+        fn new(severity_level: Severity, name: Option<String>, target: String) -> Self {
             LogProcessorWithIsEnabled {
                 severity_level,
                 name,
@@ -1190,10 +1297,7 @@ mod tests {
             // assert that passed in arguments are same as the ones set in the test.
             assert_eq!(self.severity_level, level);
             assert_eq!(self.target, target);
-            assert_eq!(
-                self.name,
-                name.expect("name is expected from tracing appender")
-            );
+            assert_eq!(self.name.as_deref(), name);
             true
         }
 
@@ -1212,7 +1316,7 @@ mod tests {
         let logger_provider = SdkLoggerProvider::builder()
             .with_log_processor(LogProcessorWithIsEnabled::new(
                 Severity::Error,
-                "my-event-name".to_string(),
+                Some("my-event-name".to_string()),
                 "my-system".to_string(),
             ))
             .build();
@@ -1226,6 +1330,21 @@ mod tests {
         // Name, Target and Severity are expected to be passed to the IsEnabled check
         // The validation is done in the LogProcessorWithIsEnabled struct.
         error!(name: "my-event-name", target: "my-system", event_id = 20, user_name = "otel", user_email = "otel@opentelemetry.io");
+    }
+
+    #[test]
+    fn is_enabled_receives_none_for_unnamed_event() {
+        let logger_provider = SdkLoggerProvider::builder()
+            .with_log_processor(LogProcessorWithIsEnabled::new(
+                Severity::Error,
+                None,
+                "opentelemetry_appender_tracing::layer::tests".to_string(),
+            ))
+            .build();
+        let subscriber = create_tracing_subscriber(&logger_provider);
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        error!(event_id = 20);
     }
 
     #[test]
