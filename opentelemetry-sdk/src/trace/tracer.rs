@@ -22,7 +22,11 @@ use std::sync::Arc;
 /// `Tracer` implementation to create and manage spans
 #[derive(Clone)]
 pub struct SdkTracer {
-    scope: Arc<InstrumentationScope>,
+    inner: Arc<SdkTracerInner>,
+}
+
+struct SdkTracerInner {
+    scope: InstrumentationScope,
     provider: SdkTracerProvider,
 }
 
@@ -31,8 +35,8 @@ impl fmt::Debug for SdkTracer {
     /// Omitting `provider` here is necessary to avoid cycles.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Tracer")
-            .field("name", &self.scope.name())
-            .field("version", &self.scope.version())
+            .field("name", &self.inner.scope.name())
+            .field("version", &self.inner.scope.version())
             .finish()
     }
 }
@@ -41,19 +45,18 @@ impl SdkTracer {
     /// Create a new tracer (used internally by `TracerProvider`s).
     pub(crate) fn new(scope: InstrumentationScope, provider: SdkTracerProvider) -> Self {
         SdkTracer {
-            scope: Arc::new(scope),
-            provider,
+            inner: Arc::new(SdkTracerInner { scope, provider }),
         }
     }
 
     /// TracerProvider associated with this tracer.
     pub(crate) fn provider(&self) -> &SdkTracerProvider {
-        &self.provider
+        &self.inner.provider
     }
 
     /// Instrumentation scope of this tracer.
     pub(crate) fn instrumentation_scope(&self) -> &InstrumentationScope {
-        &self.scope
+        &self.inner.scope
     }
 
     fn build_recording_span(
@@ -291,6 +294,15 @@ mod tests {
         Context, KeyValue,
     };
     use std::collections::HashMap;
+    use std::sync::Arc;
+
+    #[test]
+    fn tracer_is_one_shared_pointer() {
+        assert_eq!(
+            std::mem::size_of::<super::SdkTracer>(),
+            std::mem::size_of::<Arc<()>>()
+        );
+    }
 
     #[derive(Clone, Debug)]
     struct TestSampler {}
