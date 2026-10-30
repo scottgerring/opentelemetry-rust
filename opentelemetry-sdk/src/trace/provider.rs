@@ -873,6 +873,39 @@ mod tests {
     }
 
     #[test]
+    fn tracer_keeps_provider_alive_until_tracer_drop() {
+        let shutdown_count = Arc::new(AtomicU32::new(0));
+        let provider = SdkTracerProvider::builder()
+            .with_span_processor(CountingShutdownProcessor::new(Arc::clone(&shutdown_count)))
+            .build();
+        let tracer = provider.tracer("test-tracer");
+
+        drop(provider);
+        assert_eq!(shutdown_count.load(Ordering::SeqCst), 0);
+
+        drop(tracer);
+        assert_eq!(shutdown_count.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn span_keeps_scope_and_provider_alive_until_span_drop() {
+        let shutdown_count = Arc::new(AtomicU32::new(0));
+        let provider = SdkTracerProvider::builder()
+            .with_span_processor(CountingShutdownProcessor::new(Arc::clone(&shutdown_count)))
+            .build();
+        let tracer = provider.tracer("test-tracer");
+        let span = tracer.start("test-span");
+
+        drop(provider);
+        drop(tracer);
+        assert_eq!(span.instrumentation_scope().name(), "test-tracer");
+        assert_eq!(shutdown_count.load(Ordering::SeqCst), 0);
+
+        drop(span);
+        assert_eq!(shutdown_count.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
     fn drop_test_with_multiple_providers() {
         let shutdown_count = Arc::new(AtomicU32::new(0));
 

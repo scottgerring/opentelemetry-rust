@@ -8,10 +8,11 @@
 //! start time is set to the current time on span creation. After the `Span` is created, it
 //! is possible to change its name, set its `Attributes`, and add `Links` and `Events`.
 //! These cannot be changed after the `Span`'s end time has been set.
-use crate::trace::SpanLimits;
+use crate::trace::{tracer::SpanOwner, SpanLimits};
 use opentelemetry::trace::{Event, Link, SpanContext, SpanId, SpanKind, Status};
 use opentelemetry::KeyValue;
 use std::borrow::Cow;
+use std::sync::Arc;
 use std::time::SystemTime;
 
 /// Single operation within a trace.
@@ -19,7 +20,7 @@ use std::time::SystemTime;
 pub struct Span {
     span_context: SpanContext,
     data: Option<SpanData>,
-    tracer: crate::trace::SdkTracer,
+    tracer: Arc<SpanOwner>,
     span_limits: SpanLimits,
 }
 
@@ -56,7 +57,7 @@ impl Span {
     pub(crate) fn new(
         span_context: SpanContext,
         data: Option<SpanData>,
-        tracer: crate::trace::SdkTracer,
+        tracer: Arc<SpanOwner>,
         span_limit: SpanLimits,
     ) -> Self {
         Span {
@@ -463,7 +464,7 @@ impl std::fmt::Debug for FinishedSpan<'_> {
 fn build_export_data(
     data: SpanData,
     span_context: SpanContext,
-    tracer: &crate::trace::SdkTracer,
+    tracer: &SpanOwner,
 ) -> crate::trace::SpanData {
     crate::trace::SpanData {
         span_context,
@@ -523,7 +524,7 @@ mod tests {
         Span::new(
             SpanContext::empty_context(),
             Some(data),
-            tracer,
+            tracer.span_owner(),
             Default::default(),
         )
     }
@@ -534,7 +535,7 @@ mod tests {
         let mut span = Span::new(
             SpanContext::empty_context(),
             None,
-            tracer,
+            tracer.span_owner(),
             Default::default(),
         );
         span.with_data(|_data| panic!("there are data"));
@@ -546,7 +547,7 @@ mod tests {
         let mut span = Span::new(
             SpanContext::empty_context(),
             Some(data.clone()),
-            tracer,
+            tracer.span_owner(),
             Default::default(),
         );
         span.with_data(|d| assert_eq!(*d, data));

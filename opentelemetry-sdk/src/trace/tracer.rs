@@ -17,18 +17,68 @@ use opentelemetry::{
     Context, InstrumentationScope, KeyValue, TraceId,
 };
 use std::fmt;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, OnceLock};
+
+const SPAN_OWNER_SHARDS: usize = 16;
+static NEXT_THREAD_SHARD: AtomicUsize = AtomicUsize::new(0);
+
+thread_local! {
+    static THREAD_SHARD: usize = NEXT_THREAD_SHARD.fetch_add(1, Ordering::Relaxed);
+}
 
 /// `Tracer` implementation to create and manage spans
 #[derive(Clone)]
 pub struct SdkTracer {
+    inner: Arc<SdkTracerInner>,
+}
+
+struct SdkTracerInner {
+    scope: Arc<InstrumentationScope>,
+    provider: SdkTracerProvider,
+    span_owners: [OnceLock<Arc<SpanOwner>>; SPAN_OWNER_SHARDS],
+}
+
+/// Shard-local owner retained by spans.
+///
+/// Each shard's reference count must sit on its own cache line. Owners are small
+/// separate allocations, and some allocators (for example macOS malloc) place
+/// owners created by different threads next to each other, so their counters
+/// would false-share and reintroduce the contention sharding removes. The
+/// alignment follows crossbeam's `CachePadded`: 128 bytes where adjacent-line
+/// prefetching or 128-byte lines are common, 64 bytes elsewhere.
+#[cfg_attr(
+    any(
+        target_arch = "x86_64",
+        target_arch = "aarch64",
+        target_arch = "powerpc64"
+    ),
+    repr(align(128))
+)]
+#[cfg_attr(
+    not(any(
+        target_arch = "x86_64",
+        target_arch = "aarch64",
+        target_arch = "powerpc64"
+    )),
+    repr(align(64))
+)]
+pub(crate) struct SpanOwner {
     scope: Arc<InstrumentationScope>,
     provider: SdkTracerProvider,
 }
 
-impl fmt::Debug for SdkTracer {
-    /// Formats the `Tracer` using the given formatter.
-    /// Omitting `provider` here is necessary to avoid cycles.
+impl SpanOwner {
+    pub(crate) fn provider(&self) -> &SdkTracerProvider {
+        &self.provider
+    }
+
+    pub(crate) fn instrumentation_scope(&self) -> &InstrumentationScope {
+        &self.scope
+    }
+}
+
+impl fmt::Debug for SpanOwner {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Tracer")
             .field("name", &self.scope.name())
@@ -37,23 +87,51 @@ impl fmt::Debug for SdkTracer {
     }
 }
 
+impl fmt::Debug for SdkTracer {
+    /// Formats the `Tracer` using the given formatter.
+    /// Omitting `provider` here is necessary to avoid cycles.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Tracer")
+            .field("name", &self.inner.scope.name())
+            .field("version", &self.inner.scope.version())
+            .finish()
+    }
+}
+
 impl SdkTracer {
     /// Create a new tracer (used internally by `TracerProvider`s).
     pub(crate) fn new(scope: InstrumentationScope, provider: SdkTracerProvider) -> Self {
         SdkTracer {
-            scope: Arc::new(scope),
-            provider,
+            inner: Arc::new(SdkTracerInner {
+                scope: Arc::new(scope),
+                provider,
+                span_owners: std::array::from_fn(|_| OnceLock::new()),
+            }),
         }
     }
 
     /// TracerProvider associated with this tracer.
     pub(crate) fn provider(&self) -> &SdkTracerProvider {
-        &self.provider
+        &self.inner.provider
     }
 
     /// Instrumentation scope of this tracer.
+    #[cfg(test)]
     pub(crate) fn instrumentation_scope(&self) -> &InstrumentationScope {
-        &self.scope
+        &self.inner.scope
+    }
+
+    pub(crate) fn span_owner(&self) -> Arc<SpanOwner> {
+        THREAD_SHARD.with(|thread_shard| {
+            Arc::clone(
+                self.inner.span_owners[*thread_shard % SPAN_OWNER_SHARDS].get_or_init(|| {
+                    Arc::new(SpanOwner {
+                        scope: Arc::clone(&self.inner.scope),
+                        provider: self.inner.provider.clone(),
+                    })
+                }),
+            )
+        })
     }
 
     fn build_recording_span(
@@ -147,7 +225,7 @@ impl SdkTracer {
                 links: span_links,
                 status: Status::default(),
             }),
-            self.clone(),
+            self.span_owner(),
             span_limits,
         )
     }
@@ -169,7 +247,7 @@ impl opentelemetry::trace::Tracer for SdkTracer {
             return Span::new(
                 SpanContext::empty_context(),
                 None,
-                self.clone(),
+                self.span_owner(),
                 SpanLimits::default(),
             );
         }
@@ -180,7 +258,7 @@ impl opentelemetry::trace::Tracer for SdkTracer {
             return Span::new(
                 SpanContext::empty_context(),
                 None,
-                self.clone(),
+                self.span_owner(),
                 SpanLimits::default(),
             );
         }
@@ -260,7 +338,7 @@ impl opentelemetry::trace::Tracer for SdkTracer {
                     false,
                     trace_state,
                 );
-                Span::new(span_context, None, self.clone(), span_limits)
+                Span::new(span_context, None, self.span_owner(), span_limits)
             }
         };
 
@@ -291,6 +369,20 @@ mod tests {
         Context, KeyValue,
     };
     use std::collections::HashMap;
+    use std::sync::Arc;
+
+    #[test]
+    fn tracer_is_one_shared_pointer() {
+        assert_eq!(
+            std::mem::size_of::<super::SdkTracer>(),
+            std::mem::size_of::<Arc<()>>()
+        );
+    }
+
+    #[test]
+    fn span_owner_is_cache_line_aligned() {
+        assert!(std::mem::align_of::<super::SpanOwner>() >= 64);
+    }
 
     #[derive(Clone, Debug)]
     struct TestSampler {}
